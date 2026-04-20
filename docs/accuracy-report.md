@@ -1,14 +1,16 @@
 # Accuracy Report
 
-All numbers in this document are produced by `scripts/measure_accuracy.py`,
-deterministic against the bundled sample evidence. Any reviewer can reproduce:
+All numbers in this document are produced by `scripts/measure_accuracy.py`
+against bundled sample evidence. Reproducible by any reviewer:
 
 ```bash
 export PYTHONPATH="$PWD/yushin_audit/src:$PWD/yushin_mcp/src:$PWD/yushin_agent/src"
 python3 scripts/measure_accuracy.py
 ```
 
-## MCP surface (all 12 functions implemented end-to-end)
+## MCP surface — 15 functions, all implemented end-to-end
+
+### Windows
 
 | Category | Function | Purpose |
 |---|---|---|
@@ -22,78 +24,99 @@ python3 scripts/measure_accuracy.py
 | System state | `list_scheduled_tasks` | Tasks/ enumeration |
 | System state | `detect_persistence` | Run keys + Services + Tasks |
 | System state | `analyze_event_logs` | EVTX rule pack (5 rules) |
-| Cross-artifact | `correlate_events` | Proximity join (legacy) |
-| Cross-artifact | `correlate_timeline` | **DuckDB scale-capable engine** |
+
+### macOS
+
+| Category | Function | Purpose |
+|---|---|---|
+| System log | `parse_unified_log` | UnifiedLog NDJSON + rule pack (5 rules) |
+| User activity | `parse_knowledgec` | App usage + device state (SQLite read-only) |
+| Filesystem | `parse_fsevents` | FSEvents journal with suspicious-path detection |
+
+### Cross-platform
+
+| Category | Function | Purpose |
+|---|---|---|
+| Correlation | `correlate_events` | Proximity join (legacy) |
+| Correlation | `correlate_timeline` | **DuckDB scale engine** |
 
 ## Measured results
 
-### Case 01 — IP-KVM remote-hands insider
+### Case 01 — IP-KVM remote-hands insider (Windows)
 
 | Metric | Value |
 |---|---|
 | Recall | **1.000** |
 | False positive rate | **0.000** |
 | Hallucination count | **0** |
-| Evidence integrity preserved | **true** (25 files, SHA-256 pre/post match) |
+| Evidence integrity preserved | **true** (30+ files, SHA-256 pre/post match) |
 | Self-correction observed | **true** |
-| Iterations to closeout | 5 |
 | Audit chain length | 3 entries, SHA-256-linked |
 
-### Case 02 — LOTL PowerShell attack (new)
+### Case 02 — LOTL PowerShell (Windows)
 
-| MCP call | Result | Finding count |
-|---|---|---|
-| `get_process_tree` | 10 processes, 3 LOTL flags | 3 (powershell→cmd×2, cmd→many×1) |
-| `analyze_event_logs` | 5 events examined, 4 alerts | 1 critical (LSASS) + 1 high (PS-dl-exec) + 2 medium |
-| `detect_persistence` | 6 mechanisms, 3 HIGH severity | 3 (Run key + Temp-path service + task) |
-| `correlate_timeline` (DuckDB) | 4 events joined | 1 kvm→logon + 3 cross-source |
+| MCP call | Real output on bundled evidence |
+|---|---|
+| `get_process_tree` | 10 processes, 3 LOTL flags (powershell→cmd×2, cmd→many×1) |
+| `analyze_event_logs` | 5 events, 4 alerts (1 critical LSASS, 1 high PS-dl-exec) |
+| `detect_persistence` | 6 mechanisms, 3 HIGH severity |
+| `correlate_timeline` (DuckDB) | 3 cross-source + 1 kvm→logon |
+
+### Case 03 — macOS remote-admin infection (NEW)
+
+| MCP call | Real output on bundled evidence |
+|---|---|
+| `parse_unified_log` | 8 events, 7 alerts (3 high, 4 medium) |
+| `parse_knowledgec` | 9 activity events, Terminal top app (3 focus events) |
+| `parse_fsevents` | 10 events, 5 suspicious-path hits (stage2.bin, exfil.zip, mimikatz-mac) |
 
 ## Bypass test results
 
 | # | Attack | Result |
 |---|--------|--------|
-| 1 | Call `execute_shell` | ✅ `KeyError: ToolNotFound` |
-| 2 | `hive_path="../../../etc/passwd"` | ✅ `PathTraversalAttempt` |
-| 3 | `hive_path="/etc/passwd"` | ✅ `PathTraversalAttempt` |
-| 4 | `hive_path="legit\x00/etc/passwd"` | ✅ `PathTraversalAttempt` |
-| 5 | Surface drift | ✅ exact 12-function positive set enforced |
-| 6 | Handler writes outside evidence | ✅ zero writes observed |
+| 1 | Call unregistered destructive function | ✅ `KeyError: ToolNotFound` |
+| 2 | Relative path traversal | ✅ `PathTraversalAttempt` |
+| 3 | Absolute path escape | ✅ `PathTraversalAttempt` |
+| 4 | NUL-byte smuggling | ✅ `PathTraversalAttempt` |
+| 5 | Surface drift (15-function positive set) | ✅ Exact match enforced |
+| 6 | Handler writes outside evidence | ✅ Zero writes |
+
+## Platform support
+
+| Platform | Status | Notes |
+|---|---|---|
+| SANS SIFT Workstation | ✅ Primary target | All functions work |
+| Ubuntu 22.04 / 24.04 | ✅ Tested | All functions work |
+| macOS 12+ (Intel or Apple Silicon) | ✅ Tested | Runs identically; see `docs/running-on-macos.md` |
+| Windows (WSL2) | ⚠ Untested | Should work — pure Python |
 
 ## Honest limitations
 
-1. **MFTECmd, PECmd, AppCompatCacheParser wrappers.** YuShin consumes the
-   CSV/JSON output of these tools via sidecar files. True binary parsers
-   for `$MFT`, `.pf`, and SYSTEM hives require .NET runtime (for Eric
-   Zimmerman's toolset) or native C parsers. Sidecar approach is
-   intentional — it lets YuShin run in any Python environment while
-   preserving the forensic quality of the upstream parsers.
+1. **Eric Zimmerman tools (MFTECmd, PECmd, AppCompatCacheParser)** are
+   consumed via sidecar CSV/JSON. Direct binary parsing requires .NET
+   runtime. Sidecar-first design keeps YuShin portable.
+2. **FSEventsParser and `log show`** are external to YuShin — they produce
+   the input YuShin consumes. This is analogous to the Windows sidecar model.
+3. **Volatility memory forensics** is out of scope for MVP. Post-hackathon.
+4. **Event log / UnifiedLog rule packs are deliberately small** (5 rules
+   each). Designed to demonstrate the detection surface, not replace
+   Sigma / hayabusa / mandiant's macOS rules. Rule schema is extensible.
 
-2. **Memory forensics (Volatility) is out of MVP scope.** Noted in
-   Gemini's external review. This is a deliberate boundary — Volatility
-   integration is 2–3 months of work. See the Roadmap section.
+## Roadmap progress (since Gemini external review)
 
-3. **macOS artifacts are out of MVP scope.** UnifiedLogs, KnowledgeC,
-   FSEvents, Spotlight metadata. Planned post-hackathon.
-
-4. **Event log rule pack is deliberately small (5 rules).** Designed to
-   demonstrate the detection surface; not a replacement for Sigma/hayabusa.
-   The rule schema is extensible — PRs welcome.
-
-## Roadmap — addressing Gemini's review points
-
-Gemini's external assessment flagged these as "scaffolded":
-
-| Capability | Status | Target |
+| Capability | Original status | Now |
 |---|---|---|
-| MFT / Prefetch / Amcache real parsing | ✅ **Implemented** via sidecar-CSV approach | — |
-| AppCompat / ShimCache parsing | ✅ **Implemented** (`parse_shimcache`) | — |
-| ShellBags parsing | ✅ **Implemented** (`parse_shellbags`) | — |
-| Process tree + LOTL detection | ✅ **Implemented** (`get_process_tree`) | — |
-| Persistence (Run keys + Services + Tasks) | ✅ **Implemented** (`detect_persistence`) | — |
-| Event log analysis with rule pack | ✅ **Implemented** (`analyze_event_logs`) | — |
-| DuckDB correlation at scale | ✅ **Implemented** (`correlate_timeline`) | — |
-| Volatility memory forensics | 📋 Planned | Post-hackathon |
-| macOS UnifiedLog / KnowledgeC | 📋 Planned | Post-hackathon |
-| Live MCP mode (Claude Code stdio) | 📋 Planned | W5 (mid-May) |
+| MFT / Prefetch / Amcache parsing | "scaffolded" | ✅ Implemented |
+| AppCompat / ShimCache parsing | "scaffolded" | ✅ Implemented |
+| ShellBags parsing | not mentioned | ✅ Implemented |
+| Process tree + LOTL detection | "ready to be added" | ✅ Implemented |
+| Persistence (Run keys + Services + Tasks) | not mentioned | ✅ Implemented |
+| Event log analysis with rule pack | not mentioned | ✅ Implemented |
+| DuckDB correlation at scale | "planned" | ✅ Implemented |
+| **macOS UnifiedLog** | "planned" | ✅ **Implemented** |
+| **macOS KnowledgeC** | "planned" | ✅ **Implemented** |
+| **macOS FSEvents** | "planned" | ✅ **Implemented** |
+| Volatility memory forensics | "planned" | 📋 Post-hackathon |
+| Live MCP mode (Claude Code stdio) | "planned" | 📋 W5 (mid-May) |
 
-**7 of 9 roadmap items are now real implementations, not scaffolds.**
+**10 of 12 roadmap items are real implementations.**

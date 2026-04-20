@@ -768,6 +768,295 @@ def correlate_timeline(events, rules=None, window_seconds=300):
     }
 
 
+# =============================================================================
+# macOS ARTIFACTS
+# =============================================================================
+#
+# macOS forensics relies on three primary artifact families:
+#   1. UnifiedLog    — system-wide structured log (.tracev3 binary)
+#   2. KnowledgeC    — app usage, device activity (~/Library/Application Support/Knowledge/knowledgeC.db, SQLite)
+#   3. FSEvents      — filesystem change journal (/.fseventsd/, binary)
+#
+# Like the Windows Eric Zimmerman toolchain, the canonical parsers are
+# native (`log show`, `fsevents-parser`, sqlite3). YuShin consumes their
+# exported output via sidecar files — the same sidecar-first design used
+# for MFT/ShimCache/ShellBags on the Windows side.
+#
+# This keeps the MCP pure Python / dependency-light while still producing
+# analyst-grade output.
+
+@tool(
+    name="parse_unified_log",
+    description="Parse macOS UnifiedLog JSON export (produced by `log show "
+                "--style ndjson`). Filters by predicate, time window, and "
+                "process. Returns structured alerts for known-bad patterns.",
+    schema={"type": "object", "properties": {
+        "unifiedlog_json": {"type": "string"},
+        "time_window_start": {"type": "string"},
+        "time_window_end": {"type": "string"},
+        "process_filter": {"type": "string"},
+        "limit": {"type": "integer", "default": 500, "maximum": 5000},
+    }, "required": ["unifiedlog_json"]},
+)
+def parse_unified_log(unifiedlog_json, time_window_start=None,
+                      time_window_end=None, process_filter=None, limit=500):
+    """UnifiedLog reader. Expects output of:
+        log show --style ndjson --start '2026-03-15' --end '2026-03-16' > unifiedlog.ndjson
+    One JSON object per line. Timestamp field: 'timestamp' or 'eventMessage' time."""
+    p = _safe_resolve(unifiedlog_json)
+    if not p.exists():
+        return {"error": "file_not_found", "path": str(p),
+                "hint": "produce via: log show --style ndjson > unifiedlog.ndjson"}
+
+    sdt = _parse_ts(time_window_start) if time_window_start else None
+    edt = _parse_ts(time_window_end) if time_window_end else None
+
+    # Rules adapted from mandiant/macos-UnifiedLogs research
+    MACOS_RULES = [
+        {"id": "tcc_bypass_attempt", "subsystem": "com.apple.TCC",
+         "match": lambda e: "deny" in (e.get("eventMessage") or "").lower()
+                            and "kTCCService" in (e.get("eventMessage") or ""),
+         "severity": "high",
+         "desc": "TCC (privacy) denial — app attempting unauthorized resource access"},
+        {"id": "ssh_auth_failure", "subsystem": "com.openssh.sshd",
+         "match": lambda e: "authentication failure" in (e.get("eventMessage") or "").lower()
+                            or "invalid user" in (e.get("eventMessage") or "").lower(),
+         "severity": "medium",
+         "desc": "SSH authentication failure — possible brute force"},
+        {"id": "gatekeeper_override", "subsystem": "com.apple.syspolicy",
+         "match": lambda e: "translocation" in (e.get("eventMessage") or "").lower()
+                            or "quarantine" in (e.get("eventMessage") or "").lower(),
+         "severity": "medium",
+         "desc": "Gatekeeper quarantine / translocation event"},
+        {"id": "xprotect_detection", "subsystem": "com.apple.xprotect",
+         "match": lambda e: True, "severity": "high",
+         "desc": "XProtect malware signature detection"},
+        {"id": "launchd_daemon_load", "subsystem": "com.apple.xpc.launchd",
+         "match": lambda e: "loaded:" in (e.get("eventMessage") or "").lower()
+                            and any(s in (e.get("eventMessage") or "")
+                                    for s in ("/Users/", "/tmp/", "/private/tmp/")),
+         "severity": "high",
+         "desc": "Suspicious launchd daemon loaded from user-writable path"},
+    ]
+
+    events = []
+    text = p.read_text(encoding="utf-8", errors="replace")
+    # Accept JSON array or NDJSON
+    try:
+        parsed = json.loads(text)
+        events = parsed if isinstance(parsed, list) else [parsed]
+    except json.JSONDecodeError:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    alerts = []
+    filtered_count = 0
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        # Time filter
+        ts = _parse_ts(ev.get("timestamp", "") or ev.get("time", ""))
+        if sdt and ts and ts < sdt:
+            continue
+        if edt and ts and ts > edt:
+            continue
+        # Process filter
+        proc = (ev.get("processImagePath") or ev.get("process") or "").lower()
+        if process_filter and process_filter.lower() not in proc:
+            continue
+        filtered_count += 1
+        # Apply rules
+        subsystem = (ev.get("subsystem") or "").lower()
+        for rule in MACOS_RULES:
+            if rule["subsystem"].lower() not in subsystem:
+                continue
+            try:
+                if not rule["match"](ev):
+                    continue
+            except Exception:
+                continue
+            alerts.append({
+                "rule_id": rule["id"], "severity": rule["severity"],
+                "description": rule["desc"], "subsystem": ev.get("subsystem"),
+                "timestamp": ev.get("timestamp"),
+                "process": ev.get("processImagePath") or ev.get("process"),
+                "message": (ev.get("eventMessage") or "")[:200],
+            })
+            if len(alerts) >= limit:
+                break
+        if len(alerts) >= limit:
+            break
+
+    by_sev = {s: sum(1 for a in alerts if a["severity"] == s)
+              for s in ("critical", "high", "medium", "low", "info")}
+    return {"source": {"path": str(p), "sha256": _sha256(p)},
+            "events_examined": len(events), "events_matched_filter": filtered_count,
+            "alerts": alerts, "alerts_by_severity": by_sev,
+            "rules_loaded": len(MACOS_RULES)}
+
+
+@tool(
+    name="parse_knowledgec",
+    description="Parse macOS KnowledgeC.db (SQLite) — app usage, device "
+                "activity, focus mode, location events. Returns timeline of "
+                "user interactions. Privacy-sensitive artifact.",
+    schema={"type": "object", "properties": {
+        "knowledgec_db": {"type": "string"},
+        "event_stream": {"type": "string",
+                         "description": "e.g. '/app/usage', '/app/inFocus', '/device/isLocked'"},
+        "limit": {"type": "integer", "default": 500},
+    }, "required": ["knowledgec_db"]},
+)
+def parse_knowledgec(knowledgec_db, event_stream=None, limit=500):
+    """KnowledgeC reader. Uses stdlib sqlite3 (read-only). If the database
+    itself is unreachable, accepts a sidecar .csv with columns:
+        stream,bundle_id,start_time,end_time,value
+    produced by: sqlite3 knowledgeC.db -header -csv 'SELECT ... ' > sidecar.csv
+    """
+    p = _safe_resolve(knowledgec_db)
+    if not p.exists():
+        return {"error": "file_not_found", "path": str(p)}
+
+    # Sidecar-first (works without native SQLite file format validation)
+    sidecar = p.with_suffix(".csv")
+    if sidecar.exists():
+        rows = _read_csv(sidecar)
+        filtered = []
+        for r in rows:
+            if event_stream and event_stream not in (r.get("stream") or ""):
+                continue
+            filtered.append({
+                "stream": r.get("stream"),
+                "bundle_id": r.get("bundle_id") or r.get("bundleID"),
+                "start_time": r.get("start_time") or r.get("startTime"),
+                "end_time": r.get("end_time") or r.get("endTime"),
+                "value": r.get("value"),
+            })
+            if len(filtered) >= limit:
+                break
+        # Summary by bundle
+        by_bundle = {}
+        for e in filtered:
+            bid = e.get("bundle_id") or "unknown"
+            by_bundle[bid] = by_bundle.get(bid, 0) + 1
+        top_apps = sorted(by_bundle.items(), key=lambda x: -x[1])[:10]
+        return {"source": {"path": str(p), "sha256": _sha256(p)},
+                "sidecar": str(sidecar.relative_to(EVIDENCE_ROOT)),
+                "total": len(rows), "returned": len(filtered),
+                "top_apps_by_event_count": top_apps,
+                "events": filtered}
+
+    # Native SQLite fallback (read-only URI mode)
+    try:
+        import sqlite3
+        # Read-only URI prevents accidental writes even to the evidence file
+        uri = f"file:{p.as_posix()}?mode=ro&immutable=1"
+        con = sqlite3.connect(uri, uri=True)
+        con.row_factory = sqlite3.Row
+        # KnowledgeC schema: ZOBJECT has ZSTREAMNAME, ZVALUESTRING, ZSTARTDATE, ZENDDATE
+        query = """
+            SELECT ZSTREAMNAME AS stream, ZVALUESTRING AS bundle_id,
+                   datetime(ZSTARTDATE + 978307200, 'unixepoch') AS start_time,
+                   datetime(ZENDDATE   + 978307200, 'unixepoch') AS end_time
+            FROM ZOBJECT
+            WHERE 1=1
+        """
+        params = []
+        if event_stream:
+            query += " AND ZSTREAMNAME LIKE ?"
+            params.append(f"%{event_stream}%")
+        query += f" ORDER BY ZSTARTDATE DESC LIMIT {int(limit)}"
+
+        events = [dict(r) for r in con.execute(query, params).fetchall()]
+        con.close()
+
+        by_bundle = {}
+        for e in events:
+            bid = e.get("bundle_id") or "unknown"
+            by_bundle[bid] = by_bundle.get(bid, 0) + 1
+        top_apps = sorted(by_bundle.items(), key=lambda x: -x[1])[:10]
+        return {"source": {"path": str(p), "sha256": _sha256(p)},
+                "total": len(events), "returned": len(events),
+                "top_apps_by_event_count": top_apps, "events": events,
+                "engine": "sqlite3_readonly"}
+    except Exception as ex:
+        return {"error": "sqlite_read_failed", "detail": str(ex)[:200],
+                "hint": "provide sidecar .csv produced by: "
+                        "sqlite3 knowledgeC.db -header -csv '<query>' > sidecar.csv"}
+
+
+@tool(
+    name="parse_fsevents",
+    description="Parse macOS FSEvents filesystem change journal (from "
+                "/.fseventsd/). Returns file modifications, creates, renames, "
+                "and removals. Useful for reconstructing attacker file ops "
+                "that don't show in UnifiedLog.",
+    schema={"type": "object", "properties": {
+        "fsevents_csv": {"type": "string",
+                         "description": "CSV produced by fsevents-parser "
+                                        "(https://github.com/dlcowen/FSEventsParser)"},
+        "path_contains": {"type": "string"},
+        "flag_filter": {"type": "array",
+                        "description": "e.g. ['Created', 'Renamed', 'Removed']"},
+        "limit": {"type": "integer", "default": 500},
+    }, "required": ["fsevents_csv"]},
+)
+def parse_fsevents(fsevents_csv, path_contains=None, flag_filter=None, limit=500):
+    """FSEvents reader. Expects FSEventsParser CSV output with columns:
+        id,mask,path,flags
+    where flags is a comma-separated list (Created, Modified, Renamed, ...).
+    """
+    p = _safe_resolve(fsevents_csv)
+    if not p.exists():
+        return {"error": "file_not_found", "path": str(p),
+                "hint": "produce via: FSEParser.py -c parsed -o out -s /.fseventsd"}
+
+    rows = _read_csv(p)
+    events = []
+    flag_stats = {}
+    for r in rows:
+        path = r.get("path") or r.get("Path") or ""
+        flags_str = r.get("flags") or r.get("Flags") or r.get("mask") or ""
+        flags = [f.strip() for f in flags_str.split(",") if f.strip()]
+
+        if path_contains and path_contains not in path:
+            continue
+        if flag_filter and not any(f in flags for f in flag_filter):
+            continue
+
+        for f in flags:
+            flag_stats[f] = flag_stats.get(f, 0) + 1
+
+        events.append({
+            "event_id": r.get("id") or r.get("EventID"),
+            "path": path,
+            "flags": flags,
+        })
+        if len(events) >= limit:
+            break
+
+    # Suspicious pattern detection: creates + quick deletes in /tmp or /var/folders
+    suspicious = []
+    for e in events:
+        p_lower = e["path"].lower()
+        if any(s in p_lower for s in ("/private/tmp/", "/var/folders/", "/users/shared/")):
+            if "Removed" in e["flags"] or "Created" in e["flags"]:
+                suspicious.append(e)
+
+    return {"source": {"path": str(p), "sha256": _sha256(p)},
+            "total_rows": len(rows), "returned": len(events),
+            "flag_statistics": flag_stats,
+            "suspicious_path_count": len(suspicious),
+            "suspicious_samples": suspicious[:20],
+            "events": events}
+
+
 def __forbidden_never_registered():
     """Intentionally NOT registered: execute_shell, write_file, mount,
     delete_file, network_egress, spawn_process, kill_process. See

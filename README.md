@@ -108,6 +108,17 @@ The MVP demo case exercises the IP-KVM remote-hands pattern end-to-end.
 | Audit Trail Quality | Every finding → `audit_id` → MCP call → command → raw output | `audit.jsonl` chain verifiable end-to-end |
 | Usability / Documentation | One-command demo; typed schemas; YAML playbook | `examples/demo-run.sh` runs on any Python 3.10+ host |
 
+
+## Platform support
+
+Runs on SIFT Workstation (primary), Ubuntu, and **macOS 12+** (Intel and Apple Silicon). See [`docs/running-on-macos.md`](./docs/running-on-macos.md) for the 5-minute macOS quickstart.
+
+YuShin covers **both** Windows and macOS artifacts:
+
+- **Windows (10 functions):** Amcache, Prefetch, ShimCache, MFT, USB history, ShellBags, Scheduled Tasks, Persistence (Run keys/Services/Tasks), Event Logs, Process tree with LOTL detection
+- **macOS (3 functions):** UnifiedLog (with rule pack), KnowledgeC, FSEvents
+- **Cross-platform (2 functions):** `correlate_events` (proximity join), `correlate_timeline` (DuckDB scale engine)
+
 ## Case study for judges
 
 See [`examples/case-studies/case-01-ipkvm-insider/`](./examples/case-studies/case-01-ipkvm-insider/README.md) for a step-by-step walkthrough of the bundled IP-KVM remote-hands case — what the agent does at each iteration, what `audit.jsonl` records, and how `yushin-audit trace F-013` resolves a finding back to raw evidence in three clicks.
