@@ -27,7 +27,8 @@ To validate breadth against a range of case classes beyond the starter data, we 
 
 ### 3. Ali Hadi — DFIR Challenges
 
-- **Source:** https://github.com/ashemery/DFIR_Challenges
+- **Source:** https://www.ashemery.com/dfir.html (Ali Hadi's canonical DFIR challenges page)
+- **Related:** https://github.com/ashemery/DFIR-ICTCS17 (his DFIR workshop repo)
 - **Why:** Community-vetted challenges with documented answer keys; useful for regression
 
 ## Case classes exercised

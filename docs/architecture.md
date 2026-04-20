@@ -22,7 +22,7 @@ The fourth pattern (Multi-Agent Framework) is reserved for the post-submission r
 
 Responsible for:
 
-- Loading the senior-analyst system prompt from `yushin-playbook/`
+- Loading the senior-analyst system prompt from `yushin_playbook/`
 - Maintaining the hypothesis tracker (writes to `progress.jsonl`)
 - Running the iteration controller with `--max-iterations` hard cap
 - Routing all forensic work through the MCP server — never through shell
@@ -85,7 +85,7 @@ Every finding in the final report carries an `audit_id`. Judges can trace any cl
 
 ### `yushin-playbook` — YAML sequencing rules
 
-The senior-analyst playbook, expressed as YAML so other responders can contribute without touching Python. See [`../yushin-playbook/senior-analyst-v1.yaml`](../yushin-playbook/senior-analyst-v1.yaml).
+The senior-analyst playbook, expressed as YAML so other responders can contribute without touching Python. See [`../yushin_playbook/senior-analyst-v1.yaml`](../yushin_playbook/senior-analyst-v1.yaml).
 
 ## Evidence integrity — by architecture
 
