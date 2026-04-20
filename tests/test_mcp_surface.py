@@ -9,8 +9,12 @@ from yushin_mcp import list_tools, call_tool
 
 def test_registered_tools_are_exact_set():
     names = {t["name"] for t in list_tools()}
-    expected = {"get_amcache", "analyze_usb_history", "extract_mft_timeline",
-                "parse_prefetch", "list_scheduled_tasks", "correlate_events", "match_sigma_rules", "parse_evtx", "volatility_summary", "parse_knowledgec", "parse_fsevents", "parse_unified_log", "duckdb_timeline_correlate"}
+    expected = {
+        "get_amcache", "parse_prefetch", "parse_shimcache", "get_process_tree",
+        "analyze_usb_history", "parse_shellbags", "extract_mft_timeline",
+        "list_scheduled_tasks", "detect_persistence", "analyze_event_logs",
+        "correlate_events", "correlate_timeline",
+    }
     assert names == expected, f"surface drift: {names ^ expected}"
 
 

@@ -80,8 +80,16 @@ def test_null_byte_truncation_is_blocked():
 def test_surface_is_exact_positive_and_negative_set():
     """Both POSITIVE (what's registered) and NEGATIVE (what must never be)
     sets are asserted. Any drift fails this test."""
-    positive = {"get_amcache", "analyze_usb_history", "extract_mft_timeline",
-                "parse_prefetch", "list_scheduled_tasks", "correlate_events", "match_sigma_rules", "parse_evtx", "volatility_summary", "parse_knowledgec", "parse_fsevents", "parse_unified_log", "duckdb_timeline_correlate"}
+    positive = {
+        # Execution evidence
+        "get_amcache", "parse_prefetch", "parse_shimcache", "get_process_tree",
+        # User activity
+        "analyze_usb_history", "parse_shellbags", "extract_mft_timeline",
+        # System state
+        "list_scheduled_tasks", "detect_persistence", "analyze_event_logs",
+        # Cross-artifact
+        "correlate_events", "correlate_timeline",
+    }
     negative = {"execute_shell", "write_file", "mount", "umount", "eval",
                 "exec_python", "network_egress", "delete_file", "system",
                 "spawn_process", "kill_process"}
