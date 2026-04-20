@@ -1,10 +1,10 @@
 # YuShin (優心) — Autonomous DFIR Agent on SANS SIFT Workstation
 
-> *An autonomous DFIR agent that thinks like a senior analyst.  
-> Architecture-first, not prompt-first.*
+> *An autonomous DFIR agent that thinks like a senior analyst.*
+> *Architecture-first, not prompt-first.*
 
-**Submission to:** [SANS FIND EVIL! Hackathon 2026](https://findevil.devpost.com/)  
-**License:** MIT  
+**Submission to:** [SANS FIND EVIL! Hackathon 2026](https://findevil.devpost.com/)
+**License:** MIT
 **Status:** 🚧 Active development — submission deadline June 15, 2026
 
 ---
@@ -15,7 +15,9 @@ Protocol SIFT proved that AI agents can operate the SIFT Workstation. It also ha
 
 The name is a Japanese reading of **優心**, meaning "discerning mind."
 
-## Architectural thesis
+## Architecture
+
+![YuShin Architecture](./yushin-architecture.png)
 
 1. **Custom MCP Server** is the primary enforcement layer. The agent has no `execute_shell()`. Destructive commands are not refused — they are *not present*.
 2. **Direct Agent Extension on Claude Code** handles session ergonomics. Security boundaries live in the server, not the prompt.
@@ -23,9 +25,12 @@ The name is a Japanese reading of **優心**, meaning "discerning mind."
 
 Evidence is mounted **read-only at the OS level** before the agent is ever started. Integrity is a property of the system shape, not a rule the agent is asked to follow.
 
+For the full design rationale, see [`docs/architecture.md`](./docs/architecture.md).
+
 ## Repository layout
 
-```textyushin-dfir/
+```text
+yushin-dfir/
 ├── yushin-mcp/        # Custom MCP server: typed, read-only forensic functions
 ├── yushin-agent/      # Claude Code wrapper: system prompt, hypothesis tracker, iteration controller
 ├── yushin-corr/       # Cross-artifact correlation engine (Python + DuckDB)
@@ -33,11 +38,12 @@ Evidence is mounted **read-only at the OS level** before the agent is ever start
 ├── yushin-playbook/   # Senior-analyst sequencing rules (YAML, community-extensible)
 ├── docs/
 │   ├── architecture.md
+│   ├── dataset.md
 │   ├── accuracy-report.md
-│   └── dataset.md
+│   └── troubleshooting.md
 ├── scripts/
 │   └── install.sh     # One-command deploy on a clean SIFT OVA
-└── examples/          # Sample runs against public ground-truth datasets
+└── yushin-architecture.png
 ```
 
 ## Quick start (on a SIFT Workstation OVA)
@@ -46,7 +52,7 @@ Evidence is mounted **read-only at the OS level** before the agent is ever start
 curl -fsSL https://raw.githubusercontent.com/Juwon1405/yushin-dfir/main/scripts/install.sh | bash
 ```
 
-Detailed setup, dependencies, and judge-runnable examples: see [`docs/`](./docs).
+Detailed setup and judge-runnable examples: see [`docs/`](./docs).
 
 ## Target case class
 
@@ -81,6 +87,5 @@ MIT — see [LICENSE](./LICENSE).
 
 ## Author
 
-**YuShin (優心 / Bang Juwon)** — DFIR practitioner.  
+**YuShin (優心 / Bang Juwon)** — DFIR practitioner.
 Contact via GitHub.
-
