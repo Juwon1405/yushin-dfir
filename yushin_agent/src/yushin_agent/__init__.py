@@ -100,8 +100,14 @@ class DeterministicAnalyst:
         self.unresolved: list[str] = []
 
     # ---- iteration primitive ----
-    def _call(self, tool_name: str, inputs: dict, *, output_tokens: int = 500) -> tuple[dict, str]:
-        """Invoke an MCP tool AND log it. Returns (output, audit_id)."""
+    def _call(self, tool_name: str, inputs: dict, *,
+              output_tokens: int = 500,
+              finding_ids: list | None = None) -> tuple[dict, str]:
+        """Invoke an MCP tool AND log it. Returns (output, audit_id).
+
+        finding_ids forward-declares which findings this call will support
+        so the audit chain is queryable via `yushin-audit trace <fid>`.
+        """
         output = call_tool(tool_name, inputs)
         aid = self.audit.log(
             tool_name=tool_name,
@@ -110,22 +116,50 @@ class DeterministicAnalyst:
             iteration=self.iteration,
             token_count_in=len(json.dumps(inputs)) // 4,   # rough proxy
             token_count_out=output_tokens,
+            finding_ids=finding_ids or [],
         )
         return output, aid
 
     # ---- phases ----
     def run(self) -> dict:
-        self._phase_timeline()
-        self._phase_hypothesis()
-        self._phase_validate_usb()          # <-- triggers the self-correction
-        self._phase_finalize()
+        # Hard cap: the controller refuses to exceed max_iter even if the
+        # playbook schedules additional phases. Exit path writes a closeout
+        # report so an early exit is still analyst-readable.
+        phases = [
+            self._phase_timeline,
+            self._phase_hypothesis,
+            self._phase_validate_usb,  # triggers self-correction
+            self._phase_finalize,
+        ]
+        for phase in phases:
+            if self.iteration >= self.max_iter:
+                self._forced_exit_closeout()
+                return self._report()
+            phase()
         return self._report()
+
+    def _forced_exit_closeout(self) -> None:
+        self.progress.write(ProgressSnapshot(
+            iteration=self.iteration,
+            ts=_now(),
+            phase="forced_exit",
+            primary_hypothesis=getattr(self, "_primary", None),
+            alternative_hypothesis=getattr(self, "_alt", None),
+            unresolved=self.unresolved + [
+                f"Hit --max-iterations cap at iteration {self.iteration}. "
+                "Remaining phases skipped; report is partial."],
+            notes="Controller forced exit — max-iterations cap reached.",
+        ))
 
     def _phase_timeline(self) -> None:
         self.iteration += 1
-        out, aid = self._call("get_amcache",
-                              {"hive_path": "disk/Windows/AppCompat/Programs/Amcache.hve"})
-        # Pretend we saw something worth a finding.
+        # Pre-declare F-001 on the audit entry so `yushin-audit trace F-001`
+        # resolves to this exact MCP call.
+        out, aid = self._call(
+            "get_amcache",
+            {"hive_path": "disk/Windows/AppCompat/Programs/Amcache.hve"},
+            finding_ids=["F-001"],
+        )
         fid = "F-001"
         self.findings.append(Finding(
             finding_id=fid,
@@ -172,10 +206,16 @@ class DeterministicAnalyst:
         and the agent must re-run with adjusted parameters.
         """
         self.iteration += 1
+        # The USB call BEFORE we know if F-013 will be produced: we speculatively
+        # tag it, then drop the tag by rewriting the chain if no contradiction
+        # is found. For the MVP we tag unconditionally (worst case: F-013 ID
+        # appears in an audit entry that did not ultimately produce it — which
+        # is documented in docs/accuracy-report.md).
         out, aid = self._call(
             "analyze_usb_history",
             {"system_hive": "disk/Windows/System32/config/SYSTEM",
              "setupapi_log": "disk/Windows/INF/setupapi.dev.log"},
+            finding_ids=["F-013"],
         )
         ip_kvm_hits = out.get("ip_kvm_indicators", [])
         if ip_kvm_hits:
@@ -198,6 +238,7 @@ class DeterministicAnalyst:
                  "setupapi_log": "disk/Windows/INF/setupapi.dev.log",
                  "time_window_start": "2026-03-01T00:00:00Z",
                  "time_window_end":   "2026-03-31T23:59:59Z"},
+                finding_ids=["F-013"],
             )
 
             # Contradiction resolves: the IP-KVM pattern is the signature

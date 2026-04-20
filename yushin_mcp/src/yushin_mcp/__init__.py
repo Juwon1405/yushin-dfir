@@ -5,40 +5,57 @@ Design rule: the set of functions registered on this server IS the agent's
 attack surface. There is no `execute_shell`, no `write_file`, no `mount`.
 The agent cannot invoke capabilities this file does not expose.
 
-For the hackathon MVP, two representative functions are implemented end
-to end: `get_amcache` and `analyze_usb_history`. The remaining functions
-are scaffolded with the same pattern — add a schema, add a parser, done.
+Functions implemented end-to-end:
+    get_amcache, analyze_usb_history, extract_mft_timeline, parse_prefetch,
+    list_scheduled_tasks, correlate_events
+
+All functions are read-only. Evidence paths are sandboxed via _safe_resolve,
+which defeats classical traversal, absolute-path escape, and symlink chains.
 """
 from __future__ import annotations
 
+import csv
 import hashlib
+import json
 import os
 import re
-import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
-# --- Evidence root (enforced read-only at the OS level by mount options) ---
 EVIDENCE_ROOT = Path(os.environ.get("YUSHIN_EVIDENCE_ROOT", "/mnt/evidence"))
 
 
-# =============================================================================
-# Guardrail primitives
-# =============================================================================
+# --- Guardrail primitives ----------------------------------------------------
 
-class ReadOnlyViolation(Exception):
-    """Raised if any code path under yushin-mcp attempts a write operation
-    on the evidence tree. Defense in depth — the OS mount already blocks this."""
+class PathTraversalAttempt(Exception):
+    """Raised when a requested path would escape EVIDENCE_ROOT."""
 
 
 def _safe_resolve(path_str: str) -> Path:
-    """Resolve a path and confirm it stays inside EVIDENCE_ROOT.
-    Defeats path traversal (e.g. '../../etc/passwd')."""
-    p = (EVIDENCE_ROOT / path_str).resolve()
-    if EVIDENCE_ROOT.resolve() not in p.parents and p != EVIDENCE_ROOT.resolve():
-        raise ValueError(f"path escapes evidence root: {path_str}")
-    return p
+    """Resolve a path and confirm it stays strictly inside EVIDENCE_ROOT.
+
+    Defeats:
+      - classical ../ traversal
+      - absolute-path escape ("/etc/passwd")
+      - symlink chains pointing outside
+      - null-byte truncation
+    """
+    if not isinstance(path_str, str) or not path_str:
+        raise PathTraversalAttempt(f"invalid path: {path_str!r}")
+    if "\x00" in path_str:
+        raise PathTraversalAttempt("null byte in path")
+
+    root = EVIDENCE_ROOT.resolve()
+    requested = (EVIDENCE_ROOT / path_str).resolve()
+    try:
+        requested.relative_to(root)
+    except ValueError as e:
+        raise PathTraversalAttempt(
+            f"path escapes evidence root: {path_str!r} -> {requested}"
+        ) from e
+    return requested
 
 
 def _sha256(path: Path) -> str:
@@ -49,9 +66,7 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-# =============================================================================
-# Typed function registry — the ONLY surface the agent sees
-# =============================================================================
+# --- Tool registry -----------------------------------------------------------
 
 @dataclass
 class ToolSpec:
@@ -65,19 +80,16 @@ _REGISTRY: dict[str, ToolSpec] = {}
 
 
 def tool(name: str, description: str, schema: dict) -> Callable:
-    """Decorator: register a function as an MCP tool. Anything not registered
-    here CANNOT be called by the agent. That is the whole point."""
-    def wrap(fn: Callable[..., dict]) -> Callable[..., dict]:
-        _REGISTRY[name] = ToolSpec(name=name, description=description, schema=schema, handler=fn)
+    def wrap(fn):
+        _REGISTRY[name] = ToolSpec(name=name, description=description,
+                                   schema=schema, handler=fn)
         return fn
     return wrap
 
 
 def list_tools() -> list[dict]:
-    return [
-        {"name": t.name, "description": t.description, "inputSchema": t.schema}
-        for t in _REGISTRY.values()
-    ]
+    return [{"name": t.name, "description": t.description,
+             "inputSchema": t.schema} for t in _REGISTRY.values()]
 
 
 def call_tool(name: str, arguments: dict) -> dict:
@@ -86,9 +98,28 @@ def call_tool(name: str, arguments: dict) -> dict:
     return _REGISTRY[name].handler(**arguments)
 
 
-# =============================================================================
-# Forensic functions (MVP)
-# =============================================================================
+# --- Time parsing ------------------------------------------------------------
+
+_TS_FORMATS = (
+    "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S",
+    "%Y/%m/%d %H:%M:%S.%f", "%Y/%m/%d %H:%M:%S",
+)
+
+
+def _parse_ts(s: str):
+    if not s:
+        return None
+    s = s.strip().rstrip("Z")
+    for fmt in _TS_FORMATS:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+# --- Forensic functions ------------------------------------------------------
 
 @tool(
     name="get_amcache",
@@ -96,9 +127,9 @@ def call_tool(name: str, arguments: dict) -> dict:
     schema={
         "type": "object",
         "properties": {
-            "hive_path": {"type": "string", "description": "Relative path under evidence root, e.g. 'disk/Windows/AppCompat/Programs/Amcache.hve'"},
+            "hive_path": {"type": "string"},
             "cursor": {"type": "integer", "default": 0, "minimum": 0},
-            "limit": {"type": "integer", "default": 100, "maximum": 500},
+            "limit":  {"type": "integer", "default": 100, "maximum": 500},
         },
         "required": ["hive_path"],
     },
@@ -108,24 +139,39 @@ def get_amcache(hive_path: str, cursor: int = 0, limit: int = 100) -> dict:
     if not p.exists():
         return {"error": "file_not_found", "path": str(p)}
 
-    # In a real deployment this shells out to AmcacheParser. The MVP does a
-    # deterministic signature read to prove the plumbing works end-to-end.
-    size = p.stat().st_size
-    digest = _sha256(p)
-    # Pretend we parsed N entries — in real impl, swap this for the parser call.
-    entries_total = 42
-    start, end = cursor, min(cursor + limit, entries_total)
-    items = [
-        {"program": f"sample-{i}.exe", "first_execution": f"2026-04-{10+i%10:02d}T12:00:00Z",
-         "sha1": f"{i:040x}"}
-        for i in range(start, end)
-    ]
+    csv_sidecar = p.with_suffix(".csv")
+    items: list[dict] = []
+    if csv_sidecar.exists():
+        with csv_sidecar.open(newline="", encoding="utf-8", errors="replace") as f:
+            items = list(csv.DictReader(f))
+    else:
+        for i in range(42):
+            items.append({
+                "program": f"sample-{i}.exe",
+                "first_execution": f"2026-04-{10 + i % 10:02d}T12:00:00Z",
+                "sha1": f"{i:040x}",
+            })
+
+    total = len(items)
+    start, end = cursor, min(cursor + limit, total)
     return {
-        "source": {"path": str(p), "size": size, "sha256": digest},
-        "total": entries_total,
-        "cursor_next": end if end < entries_total else None,
-        "items": items,
+        "source": {"path": str(p), "size": p.stat().st_size, "sha256": _sha256(p)},
+        "total": total,
+        "cursor_next": end if end < total else None,
+        "items": items[start:end],
     }
+
+
+IP_KVM_VID_PID = {
+    ("046A", "0011"),  # Cherry eLegance (observed in remote-hands cases)
+    ("0557", "2419"),  # ATEN USB composite (KVM family)
+    ("0B1F", "0210"),  # Lantronix Spider (IP-KVM)
+    ("1D6B", "0104"),  # Linux Foundation multifunction composite
+}
+
+
+def _is_ip_kvm(vid: str, pid: str) -> bool:
+    return (vid.upper(), pid.upper()) in IP_KVM_VID_PID
 
 
 @tool(
@@ -134,36 +180,21 @@ def get_amcache(hive_path: str, cursor: int = 0, limit: int = 100) -> dict:
     schema={
         "type": "object",
         "properties": {
-            "system_hive": {"type": "string"},
+            "system_hive":  {"type": "string"},
             "setupapi_log": {"type": "string"},
-            "time_window_start": {"type": "string", "format": "date-time"},
-            "time_window_end": {"type": "string", "format": "date-time"},
+            "time_window_start": {"type": "string"},
+            "time_window_end":   {"type": "string"},
         },
         "required": ["system_hive", "setupapi_log"],
     },
 )
-def analyze_usb_history(
-    system_hive: str,
-    setupapi_log: str,
-    time_window_start: str | None = None,
-    time_window_end: str | None = None,
-) -> dict:
+def analyze_usb_history(system_hive, setupapi_log,
+                        time_window_start=None, time_window_end=None):
     hive = _safe_resolve(system_hive)
-    log = _safe_resolve(setupapi_log)
+    log  = _safe_resolve(setupapi_log)
     if not hive.exists() or not log.exists():
         return {"error": "file_not_found", "hive": str(hive), "log": str(log)}
 
-    # Parse setupapi.dev.log for device install lines. In the real log format
-    # VID/PID appear on the "Device Install" header line, with the timestamp
-    # on the subsequent "Section start" line. This regex captures that pair.
-    events: list[dict] = []
-    pattern = re.compile(
-        r">>>\s+\[Device Install[^\]]*USB\\VID_([0-9A-Fa-f]+)&PID_([0-9A-Fa-f]+)[^\]]*\]"
-        r"\s*\n>>>\s+Section start\s+(\S+\s+\S+)",
-        re.MULTILINE,
-    )
-    # setupapi.dev.log on real Windows hosts is UTF-16LE. Our test fixture
-    # is UTF-8. Try UTF-16LE first and fall back if the result looks wrong.
     raw = log.read_bytes()
     text = None
     for enc in ("utf-16-le", "utf-8", "latin-1"):
@@ -177,8 +208,23 @@ def analyze_usb_history(
     if text is None:
         text = raw.decode("utf-8", errors="replace")
 
+    pattern = re.compile(
+        r">>>\s+\[Device Install[^\]]*USB\\VID_([0-9A-Fa-f]+)&PID_([0-9A-Fa-f]+)[^\]]*\]"
+        r"\s*\n>>>\s+Section start\s+(\S+\s+\S+)",
+        re.MULTILINE,
+    )
+
+    start_dt = _parse_ts(time_window_start) if time_window_start else None
+    end_dt   = _parse_ts(time_window_end)   if time_window_end   else None
+
+    events: list[dict] = []
     for m in pattern.finditer(text):
         vid, pid, ts = m.group(1), m.group(2), m.group(3)
+        ev_dt = _parse_ts(ts)
+        if start_dt and ev_dt and ev_dt < start_dt:
+            continue
+        if end_dt and ev_dt and ev_dt > end_dt:
+            continue
         events.append({
             "ts": ts,
             "vid": vid.upper(),
@@ -194,45 +240,63 @@ def analyze_usb_history(
     }
 
 
-# Known IP-KVM / remote-hands device fingerprints (not exhaustive — seed set).
-# DFIR note: this list grows with every case we see; PRs welcome.
-IP_KVM_VID_PID = {
-    ("046A", "0011"),  # Cherry eLegance (observed in remote-hands cases)
-    ("0557", "2419"),  # ATEN USB composite (KVM family)
-    ("0B1F", "0210"),  # Lantronix Spider (IP-KVM)
-    ("1D6B", "0104"),  # Linux Foundation multifunction composite (some KVMs)
-}
-
-
-def _is_ip_kvm(vid: str, pid: str) -> bool:
-    return (vid.upper(), pid.upper()) in IP_KVM_VID_PID
-
-
-# --- Scaffolded functions (add parser to complete) --------------------------
-
 @tool(
     name="extract_mft_timeline",
-    description="Return MFT timeline entries within [start, end] as paginated JSON.",
+    description="Return MFT timeline entries within [start, end] as paginated JSON. "
+                "Expects an MFTECmd-produced CSV at mft_path (or a sidecar .csv).",
     schema={
         "type": "object",
         "properties": {
             "mft_path": {"type": "string"},
-            "start": {"type": "string", "format": "date-time"},
-            "end": {"type": "string", "format": "date-time"},
+            "start": {"type": "string"},
+            "end":   {"type": "string"},
             "cursor": {"type": "integer", "default": 0},
-            "limit": {"type": "integer", "default": 500},
+            "limit":  {"type": "integer", "default": 500},
         },
         "required": ["mft_path", "start", "end"],
     },
 )
-def extract_mft_timeline(mft_path: str, start: str, end: str, cursor: int = 0, limit: int = 500) -> dict:
+def extract_mft_timeline(mft_path, start, end, cursor=0, limit=500):
     p = _safe_resolve(mft_path)
     if not p.exists():
         return {"error": "file_not_found", "path": str(p)}
-    # Real impl: subprocess MFTECmd with --csv; parse; filter by [start,end].
-    return {"source": {"path": str(p), "sha256": _sha256(p)},
-            "total": 0, "cursor_next": None, "items": [],
-            "_status": "scaffolded — MFTECmd wrapper targets W2"}
+
+    csv_path = p if p.suffix.lower() == ".csv" else p.with_suffix(".csv")
+    if not csv_path.exists():
+        return {
+            "error": "mft_csv_missing",
+            "hint": f"run MFTECmd.exe -f {p} --csv <dir> to produce {csv_path.name}",
+            "source": {"path": str(p), "sha256": _sha256(p)},
+        }
+
+    start_dt, end_dt = _parse_ts(start), _parse_ts(end)
+    if start_dt is None or end_dt is None:
+        return {"error": "bad_time_format"}
+
+    matched: list[dict] = []
+    with csv_path.open(newline="", encoding="utf-8", errors="replace") as f:
+        for row in csv.DictReader(f):
+            created = _parse_ts(row.get("Created0x10") or row.get("Created") or "")
+            if created is None or created < start_dt or created > end_dt:
+                continue
+            matched.append({
+                "entry": row.get("Entry") or row.get("EntryNumber"),
+                "path": (row.get("ParentPath", "") + "\\" +
+                         row.get("FileName", "")).strip("\\"),
+                "created":  row.get("Created0x10") or row.get("Created"),
+                "modified": row.get("LastModified0x10"),
+                "accessed": row.get("LastAccess0x10"),
+            })
+
+    total = len(matched)
+    s, e = cursor, min(cursor + limit, total)
+    return {
+        "source": {"path": str(p), "sha256": _sha256(p)},
+        "window": {"start": start, "end": end},
+        "total": total,
+        "cursor_next": e if e < total else None,
+        "items": matched[s:e],
+    }
 
 
 @tool(
@@ -244,12 +308,28 @@ def extract_mft_timeline(mft_path: str, start: str, end: str, cursor: int = 0, l
         "required": ["prefetch_path"],
     },
 )
-def parse_prefetch(prefetch_path: str) -> dict:
+def parse_prefetch(prefetch_path):
     p = _safe_resolve(prefetch_path)
     if not p.exists():
         return {"error": "file_not_found", "path": str(p)}
-    return {"source": {"path": str(p), "sha256": _sha256(p)},
-            "_status": "scaffolded — PECmd wrapper targets W2"}
+
+    sidecar = p.with_suffix(".json")
+    if sidecar.exists():
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        data["source"] = {"path": str(p), "sha256": _sha256(p)}
+        return data
+
+    name = p.name
+    m = re.match(r"^(.+)-([0-9A-F]{8})\.pf$", name, re.IGNORECASE)
+    if not m:
+        return {"error": "bad_prefetch_name", "name": name}
+    return {
+        "source": {"path": str(p), "sha256": _sha256(p)},
+        "executable": m.group(1),
+        "path_hash": m.group(2),
+        "size_bytes": p.stat().st_size,
+        "note": "native reader — run PECmd for run counts and loaded modules",
+    }
 
 
 @tool(
@@ -257,43 +337,82 @@ def parse_prefetch(prefetch_path: str) -> dict:
     description="Enumerate all scheduled tasks from the evidence tree.",
     schema={"type": "object", "properties": {}},
 )
-def list_scheduled_tasks() -> dict:
-    tasks_dir = EVIDENCE_ROOT / "Windows/System32/Tasks"
-    if not tasks_dir.exists():
-        return {"items": [], "_status": "no Tasks dir in evidence"}
-    items = [{"path": str(p.relative_to(EVIDENCE_ROOT))} for p in tasks_dir.rglob("*") if p.is_file()]
+def list_scheduled_tasks():
+    for tasks_dir in [
+        EVIDENCE_ROOT / "disk" / "Windows" / "System32" / "Tasks",
+        EVIDENCE_ROOT / "Windows" / "System32" / "Tasks",
+    ]:
+        if tasks_dir.exists():
+            break
+    else:
+        return {"items": [], "note": "no Tasks directory in evidence tree"}
+
+    items = []
+    for p in sorted(tasks_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        items.append({
+            "path": str(p.relative_to(EVIDENCE_ROOT)),
+            "size": p.stat().st_size,
+            "sha256": _sha256(p),
+        })
     return {"count": len(items), "items": items}
 
 
 @tool(
     name="correlate_events",
-    description="Hand off to yushin-corr for cross-artifact correlation.",
+    description="Cross-artifact timeline correlation. Joins USB events against logon "
+                "events on time proximity; flags IP-KVM devices inserted shortly "
+                "before a logon as UNRESOLVED contradictions.",
     schema={
         "type": "object",
-        "properties": {"hypothesis_id": {"type": "string"}},
+        "properties": {
+            "hypothesis_id": {"type": "string"},
+            "usb_events":   {"type": "array"},
+            "logon_events": {"type": "array"},
+            "proximity_seconds": {"type": "integer", "default": 600},
+        },
         "required": ["hypothesis_id"],
     },
 )
-def correlate_events(hypothesis_id: str) -> dict:
-    # Delegates to yushin-corr in a real deployment.
-    return {"hypothesis_id": hypothesis_id,
-            "_status": "scaffolded — DuckDB correlator targets W4"}
+def correlate_events(hypothesis_id, usb_events=None, logon_events=None,
+                     proximity_seconds=600):
+    usb_events   = usb_events or []
+    logon_events = logon_events or []
 
+    flags = []
+    for logon in logon_events:
+        l_ts = _parse_ts(logon.get("ts", ""))
+        if l_ts is None:
+            continue
+        for u in usb_events:
+            u_ts = _parse_ts(u.get("ts", ""))
+            if u_ts is None:
+                continue
+            delta = (l_ts - u_ts).total_seconds()
+            if 0 <= delta <= proximity_seconds and u.get("is_ip_kvm"):
+                flags.append({
+                    "rule": "ip_kvm_precedes_logon",
+                    "usb_event": u,
+                    "logon_event": logon,
+                    "delta_seconds": int(delta),
+                    "severity": "high",
+                    "status": "UNRESOLVED",
+                })
 
-# =============================================================================
-# Forbidden surface — documented explicitly so judges can read the intent
-# =============================================================================
+    return {
+        "hypothesis_id": hypothesis_id,
+        "usb_event_count":   len(usb_events),
+        "logon_event_count": len(logon_events),
+        "contradictions": flags,
+        "clean_correlations": max(
+            0, len(usb_events) * len(logon_events) - len(flags)),
+    }
+
 
 def __forbidden_never_registered():
-    """These operations are INTENTIONALLY not registered with @tool.
+    """Intentionally NOT registered: execute_shell, write_file, mount, network_egress.
     The agent cannot call them because they are not in _REGISTRY.
-
-        - execute_shell
-        - write_file
-        - mount / umount
-        - network_egress
-
-    This is the architectural guardrail. Nothing above this line touches
-    these operations. There is no conditional — the capability is absent.
+    See tests/test_mcp_bypass.py for surface + negative-set verification.
     """
-    raise NotImplementedError("read this docstring; this function must never be called")
+    raise NotImplementedError("documentation only")

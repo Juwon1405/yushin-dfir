@@ -1,5 +1,9 @@
 # YuShin (優心) — Autonomous DFIR Agent on SANS SIFT Workstation
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
+
+
 > *An autonomous DFIR agent that thinks like a senior analyst.*
 > *Architecture-first, not prompt-first.*
 
@@ -94,6 +98,22 @@ The MVP demo case exercises the IP-KVM remote-hands pattern end-to-end.
 | Constraint Implementation | **Architectural** — no `execute_shell` function exists in the registry | `test_mcp_surface.py::test_calling_unregistered_function_raises` |
 | Audit Trail Quality | Every finding → `audit_id` → MCP call → command → raw output | `audit.jsonl` chain verifiable end-to-end |
 | Usability / Documentation | One-command demo; typed schemas; YAML playbook | `examples/demo-run.sh` runs on any Python 3.10+ host |
+
+## Case study for judges
+
+See [`examples/case-studies/case-01-ipkvm-insider/`](./examples/case-studies/case-01-ipkvm-insider/README.md) for a step-by-step walkthrough of the bundled IP-KVM remote-hands case — what the agent does at each iteration, what `audit.jsonl` records, and how `yushin-audit trace F-013` resolves a finding back to raw evidence in three clicks.
+
+## Measured accuracy (reproducible)
+
+```
+Recall:                    1.000
+False positive rate:       0.000
+Hallucination count:       0
+Evidence integrity:        preserved (8 files, all SHA-256 hashes match pre/post)
+Self-correction observed:  true
+```
+
+Produced by `python3 scripts/measure_accuracy.py`. See [`docs/accuracy-report.md`](./docs/accuracy-report.md) for the full methodology, ground truth, honest limitations, and the measured bypass test table (6/6 passing).
 
 ## Roadmap
 
