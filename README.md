@@ -113,14 +113,18 @@ The MVP demo case exercises the IP-KVM remote-hands pattern end-to-end.
 
 Runs on SIFT Workstation (primary), Ubuntu, and **macOS 12+** (Intel and Apple Silicon). See [`docs/running-on-macos.md`](./docs/running-on-macos.md) for the 5-minute macOS quickstart.
 
-YuShin covers **Windows + macOS artifacts + browser activity + network exfiltration**:
+YuShin covers **24 forensic functions** across the full DFIR attack surface:
 
-- **Windows system (10 functions):** Amcache, Prefetch, ShimCache, MFT, USB history, ShellBags, Scheduled Tasks, Persistence (Run keys/Services/Tasks), Event Logs, Process tree with LOTL detection
-- **macOS system (3 functions):** UnifiedLog (rule pack), KnowledgeC (SQLite), FSEvents
-- **Browser + exfiltration (4 functions):** Chrome/Edge/Firefox/Safari history, download records + Mark-of-the-Web, download-to-execution chain correlation, exfiltration pattern detection
-- **Cross-artifact correlation (2 functions):** `correlate_events` (proximity join), `correlate_timeline` (DuckDB scale engine)
+- **Windows system (10):** Amcache, Prefetch, ShimCache, MFT, USB history, ShellBags, Scheduled Tasks, Persistence (Run keys/Services/Tasks), Event Logs, Process tree with LOTL detection
+- **macOS system (3):** UnifiedLog (rule pack), KnowledgeC (SQLite), FSEvents
+- **Browser + exfiltration (4):** Chrome/Edge/Firefox/Safari history, download records + Mark-of-the-Web, download-to-execution chain correlation, exfiltration pattern detection
+- **Authentication + lateral movement (5):** Windows Security log (4624/4625/4648), AD/Kerberos attack detection (Kerberoasting RC4, AS-REP Roasting), Unix auth.log (SSH/sudo/su), PsExec/WMIExec/WinRM detection, cross-platform privilege escalation
+- **Cross-artifact correlation (2):** `correlate_events` (proximity join), `correlate_timeline` (DuckDB scale engine)
 
-This covers the full kill chain: **phishing email → browser download → execution → persistence → C2 → data exfiltration**. No gap.
+Full kill-chain coverage:
+`phishing → browser download (MOTW) → execution → authentication (WHO) → persistence → lateral movement → C2 → data exfiltration`
+
+Four DFIR dimensions — **WHAT** ran, **HOW** it got in, **WHO** authenticated, **WHEN** — all covered across Windows, macOS, and Linux.
 
 
 ## Live mode (real Claude API + MCP stdio)

@@ -151,3 +151,41 @@ which earlier case studies did not address.
 ```
 
 No gap in the kill chain.
+
+## Case 05 — Authentication + Lateral Movement (NEW)
+
+Closes the WHO dimension. Covers AD/Kerberos attack patterns, Windows
+logon-type analysis, Unix SSH/sudo analysis, lateral-movement tool
+detection (PsExec/WMIExec/WinRS), and cross-platform privilege
+escalation.
+
+| MCP call | Real output on bundled evidence |
+|---|---|
+| `analyze_windows_logons` | 16 events → 5 success + 4 fail + 2 explicit; 1 brute-force survivor (jbang@203.0.113.42 after 4 fails); 1 after-hours RDP at 02:17 |
+| `detect_lateral_movement` | 2 remote-admin hits (psexec + wmiexec), 5 suspicious pairs, all HIGH |
+| `analyze_kerberos_events` | **3 Kerberoasting** (RC4 TGS to MSSQL/Exchange/LDAP), **1 AS-REP Roast** (alice no-preauth) |
+| `analyze_unix_auth` | 10-failure brute force from 203.0.113.42 → 1 survivor (jbang publickey); 3 dangerous sudo commands (shadow read, curl\|bash) |
+| `detect_privilege_escalation` | 2 CRITICAL transitions: SSH → root in 85s and 100s |
+
+## Coverage map — full DFIR dimensions
+
+```
+WHAT executed      WHAT? HOW it got in   WHO authenticated   WHEN       OUTCOME
+────────────       ─────────────────     ────────────────    ────       ───────
+get_amcache        parse_browser_history analyze_windows_    extract_   detect_
+parse_prefetch     analyze_downloads     logons              mft_       exfil
+parse_shimcache    (+ MOTW)              detect_lateral_     timeline   tration
+get_process_tree   correlate_download_   movement            parse_
+parse_fsevents     to_execution          analyze_kerberos_   fsevents
+                                         events              parse_
+parse_shellbags                          analyze_unix_auth   unified_
+list_scheduled_                          detect_privilege_   log
+tasks                                    escalation
+detect_persistence                                           
+analyze_event_logs                                           
+parse_unified_log                                            
+parse_knowledgec                                             
+```
+
+All four DFIR dimensions (WHAT, HOW, WHO, WHEN) are covered across
+Windows, macOS, and Linux.

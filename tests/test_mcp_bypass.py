@@ -94,6 +94,10 @@ def test_surface_is_exact_positive_and_negative_set():
         # Browser + exfiltration
         "parse_browser_history", "analyze_downloads",
         "correlate_download_to_execution", "detect_exfiltration",
+        # Authentication & lateral movement
+        "analyze_windows_logons", "detect_lateral_movement",
+        "analyze_kerberos_events", "analyze_unix_auth",
+        "detect_privilege_escalation",
     }
     negative = {"execute_shell", "write_file", "mount", "umount", "eval",
                 "exec_python", "network_egress", "delete_file", "system",

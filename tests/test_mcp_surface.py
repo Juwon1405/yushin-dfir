@@ -23,6 +23,10 @@ def test_registered_tools_are_exact_set():
         # Browser + exfiltration (infection vector + data loss)
         "parse_browser_history", "analyze_downloads",
         "correlate_download_to_execution", "detect_exfiltration",
+        # Authentication & lateral movement
+        "analyze_windows_logons", "detect_lateral_movement",
+        "analyze_kerberos_events", "analyze_unix_auth",
+        "detect_privilege_escalation",
     }
     assert names == expected, f"surface drift: {names ^ expected}"
 

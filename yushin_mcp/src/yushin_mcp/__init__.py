@@ -1585,6 +1585,623 @@ def detect_exfiltration(fsevents_or_mft=None, network_events=None,
             }}
 
 
+# =============================================================================
+# AUTHENTICATION & LATERAL MOVEMENT (the "WHO" question)
+# =============================================================================
+#
+# Every real intrusion answers four questions:
+#   WHAT   — what ran  (get_process_tree, parse_prefetch, get_amcache)
+#   HOW    — how it got in (parse_browser_history, analyze_downloads)
+#   WHEN   — timeline (extract_mft_timeline, parse_fsevents)
+#   WHO    — which identity authenticated, from where, how  ← THIS SECTION
+#
+# Without WHO, you find the malware but not the credential that ran it
+# — and you cannot answer "is this an insider with legit account, a
+# stolen credential, or a Kerberos ticket forgery?"
+
+# Windows logon-type lookup (from Microsoft event 4624 docs)
+LOGON_TYPE_MEANING = {
+    2:  ("Interactive",         "Console / physical keyboard"),
+    3:  ("Network",              "SMB / net use / PsExec / WMIExec (remote)"),
+    4:  ("Batch",                "Scheduled task"),
+    5:  ("Service",              "Service account"),
+    7:  ("Unlock",               "Workstation unlock"),
+    8:  ("NetworkCleartext",     "Network with cleartext creds (IIS basic auth, etc.)"),
+    9:  ("NewCredentials",       "RunAs /netonly"),
+    10: ("RemoteInteractive",    "RDP / Terminal Services"),
+    11: ("CachedInteractive",    "Cached domain credentials (offline logon)"),
+    12: ("CachedRemoteInteractive", "RDP with cached creds"),
+    13: ("CachedUnlock",         "Unlock with cached creds"),
+}
+
+# Tools commonly associated with lateral movement
+LATMOV_PROCESS_PATTERNS = [
+    (r"psexec(?:svc)?\.exe", "psexec"),
+    (r"paexec\.exe",          "paexec"),
+    (r"wmiexec",              "wmiexec"),
+    (r"smbexec",              "smbexec"),
+    (r"winrs\.exe",           "winrs"),
+    (r"wmic(?:\.exe)?.*process",    "wmic_remote"),
+    (r"powershell.*-.*(?:computer|session|invoke-command)", "powershell_remoting"),
+    (r"schtasks.*\/s\s+\\\\", "schtasks_remote"),
+    (r"sc(?:\.exe)?\s+\\\\",   "sc_remote"),
+    (r"reg(?:\.exe)?\s+(?:query|add|save)\s+\\\\", "reg_remote"),
+]
+
+
+@tool(
+    name="analyze_windows_logons",
+    description="Parse Windows Security log JSON for logon events "
+                "(4624/4625/4648). Classifies each logon by type (interactive, "
+                "RDP, network, service, batch), flags failed-then-succeeded "
+                "sequences (brute force survivors), and highlights logons "
+                "from unusual source workstations or at unusual hours.",
+    schema={"type": "object", "properties": {
+        "security_events_json": {"type": "string"},
+        "time_window_start": {"type": "string"},
+        "time_window_end": {"type": "string"},
+        "business_hours_start_hour": {"type": "integer", "default": 7},
+        "business_hours_end_hour":   {"type": "integer", "default": 20},
+    }, "required": ["security_events_json"]},
+)
+def analyze_windows_logons(security_events_json,
+                            time_window_start=None, time_window_end=None,
+                            business_hours_start_hour=7,
+                            business_hours_end_hour=20):
+    p = _safe_resolve(security_events_json)
+    if not p.exists():
+        return {"error": "file_not_found", "path": str(p)}
+
+    text = p.read_text(encoding="utf-8", errors="replace")
+    events = []
+    try:
+        parsed = json.loads(text)
+        events = parsed if isinstance(parsed, list) else [parsed]
+    except json.JSONDecodeError:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    sdt = _parse_ts(time_window_start) if time_window_start else None
+    edt = _parse_ts(time_window_end) if time_window_end else None
+
+    successes = []   # 4624
+    failures = []    # 4625
+    explicit = []    # 4648 — logon with explicit creds (RunAs / lateral)
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        try:
+            eid = int(ev.get("EventID") or ev.get("event_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if eid not in (4624, 4625, 4648):
+            continue
+        ts = _parse_ts(ev.get("TimeCreated") or ev.get("timestamp", ""))
+        if sdt and ts and ts < sdt:
+            continue
+        if edt and ts and ts > edt:
+            continue
+
+        logon_type = None
+        try:
+            logon_type = int(ev.get("LogonType") or ev.get("logon_type") or 0)
+        except (TypeError, ValueError):
+            pass
+        name, meaning = LOGON_TYPE_MEANING.get(
+            logon_type or 0, ("Unknown", f"raw LogonType={logon_type}"))
+
+        record = {
+            "ts": ev.get("TimeCreated") or ev.get("timestamp"),
+            "event_id": eid,
+            "user": ev.get("TargetUserName") or ev.get("target_user"),
+            "domain": ev.get("TargetDomainName") or ev.get("target_domain"),
+            "logon_type": logon_type,
+            "logon_type_name": name,
+            "logon_type_meaning": meaning,
+            "source_ip": ev.get("IpAddress") or ev.get("source_ip"),
+            "source_workstation": ev.get("WorkstationName")
+                                   or ev.get("source_host"),
+            "process": ev.get("ProcessName") or ev.get("process"),
+            "auth_package": ev.get("AuthenticationPackageName"),
+            "logon_process": ev.get("LogonProcessName"),
+            "is_after_hours": False,
+        }
+        if ts:
+            hr = ts.hour
+            record["is_after_hours"] = (
+                hr < business_hours_start_hour or hr >= business_hours_end_hour
+            )
+
+        if eid == 4624:
+            successes.append(record)
+        elif eid == 4625:
+            record["failure_reason"] = ev.get("FailureReason") \
+                                        or ev.get("SubStatus") \
+                                        or ev.get("Status")
+            failures.append(record)
+        else:  # 4648
+            record["target_account"] = (ev.get("TargetUserName")
+                                         or ev.get("target_user"))
+            record["target_server"] = (ev.get("TargetServerName")
+                                        or ev.get("target_server"))
+            explicit.append(record)
+
+    # Brute force survivor detection — per-user failure-then-success pattern
+    brute_force_survivors = []
+    successes_sorted = sorted(successes, key=lambda r: r.get("ts") or "")
+    for succ in successes_sorted:
+        u = succ.get("user")
+        s_ts = _parse_ts(succ.get("ts") or "")
+        if not u or s_ts is None:
+            continue
+        preceding_failures = [
+            f for f in failures
+            if f.get("user") == u
+            and (_parse_ts(f.get("ts") or "") is not None)
+            and (s_ts - _parse_ts(f.get("ts"))).total_seconds() >= 0
+            and (s_ts - _parse_ts(f.get("ts"))).total_seconds() <= 600
+        ]
+        if len(preceding_failures) >= 3:
+            brute_force_survivors.append({
+                "user": u,
+                "success_ts": succ.get("ts"),
+                "success_source_ip": succ.get("source_ip"),
+                "prior_failure_count": len(preceding_failures),
+                "first_failure_ts": min(f.get("ts") or "" for f in preceding_failures),
+                "severity": "high",
+            })
+
+    # Per-logon-type breakdown
+    by_type = {}
+    for s in successes:
+        k = f"{s['logon_type']} ({s['logon_type_name']})"
+        by_type[k] = by_type.get(k, 0) + 1
+
+    # Interactive after-hours logons
+    after_hours_interactive = [
+        s for s in successes
+        if s.get("logon_type") in (2, 10) and s.get("is_after_hours")
+    ]
+
+    # Unique source IPs for remote logons (type 3, 10)
+    remote_sources = {}
+    for s in successes:
+        if s.get("logon_type") in (3, 10) and s.get("source_ip"):
+            ip = s["source_ip"]
+            remote_sources.setdefault(ip, []).append(s.get("user"))
+
+    return {
+        "source": {"path": str(p), "sha256": _sha256(p)},
+        "events_examined": len(events),
+        "success_count": len(successes),
+        "failure_count": len(failures),
+        "explicit_cred_count": len(explicit),
+        "by_logon_type": by_type,
+        "brute_force_survivors": brute_force_survivors,
+        "after_hours_interactive_logons": after_hours_interactive,
+        "after_hours_interactive_count": len(after_hours_interactive),
+        "unique_remote_source_ips": len(remote_sources),
+        "remote_sources": {ip: list(set(users))
+                            for ip, users in remote_sources.items()},
+        "explicit_credential_events": explicit,
+    }
+
+
+@tool(
+    name="detect_lateral_movement",
+    description="Detect lateral movement patterns by joining Security logon "
+                "events (type 3 network, 4648 explicit-creds) with process "
+                "creation events containing remote-admin tooling (PsExec, "
+                "WMIExec, WinRM, PowerShell remoting, SC/SCHTASKS on \\\\host).",
+    schema={"type": "object", "properties": {
+        "logons":   {"type": "array",
+                     "description": "successes list from analyze_windows_logons"},
+        "processes": {"type": "array",
+                      "description": "process records from get_process_tree"},
+        "proximity_seconds": {"type": "integer", "default": 60},
+    }, "required": []},
+)
+def detect_lateral_movement(logons=None, processes=None, proximity_seconds=60):
+    logons = logons or []
+    processes = processes or []
+
+    # Flag remote-admin tooling in process list
+    tool_hits = []
+    for p in processes:
+        cmd = (p.get("cmdline") or p.get("CommandLine") or "") + " "
+        img = (p.get("image") or p.get("Image") or "")
+        combined = (img + " " + cmd).lower()
+        for pattern, tool_name in LATMOV_PROCESS_PATTERNS:
+            if re.search(pattern, combined):
+                tool_hits.append({
+                    "ts": p.get("start_ts") or p.get("ts"),
+                    "pid": p.get("pid"),
+                    "image": img, "cmdline": cmd.strip(),
+                    "tool": tool_name, "user": p.get("user"),
+                })
+                break
+
+    # Flag type-3 (network) and type-10 (RDP) logons
+    network_logons = [l for l in logons if l.get("logon_type") in (3, 10)]
+    explicit_creds = [l for l in logons
+                       if l.get("event_id") == 4648
+                       or "explicit" in (l.get("logon_type_name") or "").lower()]
+
+    # Join: remote-admin-tool process within N seconds of a network/explicit logon
+    suspicious_pairs = []
+    for t in tool_hits:
+        t_ts = _parse_ts(t.get("ts") or "")
+        if t_ts is None:
+            continue
+        for l in network_logons + explicit_creds:
+            l_ts = _parse_ts(l.get("ts") or "")
+            if l_ts is None:
+                continue
+            delta = (t_ts - l_ts).total_seconds()
+            if 0 <= delta <= proximity_seconds:
+                suspicious_pairs.append({
+                    "pattern": "remote_admin_after_network_logon",
+                    "logon": {"user": l.get("user"),
+                              "source_ip": l.get("source_ip"),
+                              "type": l.get("logon_type_name")},
+                    "tool_execution": {"tool": t["tool"],
+                                        "pid": t.get("pid"),
+                                        "image": t["image"],
+                                        "cmdline": t["cmdline"][:200]},
+                    "delta_seconds": int(delta),
+                    "severity": "high" if t["tool"] in
+                                 ("psexec", "wmiexec", "smbexec") else "medium",
+                })
+
+    return {
+        "remote_admin_tool_hits": tool_hits,
+        "network_logon_count": len(network_logons),
+        "explicit_credential_logon_count": len(explicit_creds),
+        "suspicious_pairs": suspicious_pairs,
+        "summary_by_tool": {
+            t: sum(1 for x in tool_hits if x["tool"] == t)
+            for t in set(x["tool"] for x in tool_hits)
+        },
+    }
+
+
+@tool(
+    name="analyze_kerberos_events",
+    description="Scan Windows Security log for Kerberos anomalies: "
+                "Kerberoasting (4769 with RC4 encryption), AS-REP Roasting "
+                "(4768 without preauth), Golden Ticket candidates (unusual "
+                "4624 with long-lived tickets), TGT requests from unusual "
+                "hosts. Covers domain/AD authentication attacks.",
+    schema={"type": "object", "properties": {
+        "security_events_json": {"type": "string"},
+    }, "required": ["security_events_json"]},
+)
+def analyze_kerberos_events(security_events_json):
+    p = _safe_resolve(security_events_json)
+    if not p.exists():
+        return {"error": "file_not_found", "path": str(p)}
+
+    text = p.read_text(encoding="utf-8", errors="replace")
+    events = []
+    try:
+        parsed = json.loads(text)
+        events = parsed if isinstance(parsed, list) else [parsed]
+    except json.JSONDecodeError:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    # RC4 encryption type = 0x17 (23) — used by Kerberoasting
+    # AES is 0x11/0x12 — modern default
+    ENCRYPTION_TYPE_RC4 = "0x17"
+
+    kerberoasting = []        # 4769 with RC4
+    asrep_roasting = []        # 4768 with no preauth
+    unusual_tgt = []           # 4768 from unusual workstation
+    ticket_failures = []       # 4771 / 4773
+
+    tgt_sources = {}  # user → set of source IPs (to detect anomalies)
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        try:
+            eid = int(ev.get("EventID") or ev.get("event_id") or 0)
+        except (TypeError, ValueError):
+            continue
+
+        user = (ev.get("TargetUserName") or ev.get("target_user") or "").lower()
+        source_ip = ev.get("IpAddress") or ev.get("source_ip")
+        ticket_enc = (ev.get("TicketEncryptionType")
+                       or ev.get("ticket_encryption") or "")
+        preauth = (ev.get("PreAuthType") or ev.get("preauth_type") or "")
+
+        if eid == 4769:  # Service ticket (TGS) request
+            if str(ticket_enc).lower() in (ENCRYPTION_TYPE_RC4, "23", "rc4"):
+                kerberoasting.append({
+                    "ts": ev.get("TimeCreated"),
+                    "user": user,
+                    "service_name": ev.get("ServiceName") or ev.get("service"),
+                    "source_ip": source_ip,
+                    "ticket_encryption": ticket_enc,
+                    "severity": "high",
+                    "interpretation": "RC4 TGS request — Kerberoasting indicator",
+                })
+
+        elif eid == 4768:  # TGT (AS_REQ)
+            if str(preauth) in ("0", "0x0"):
+                asrep_roasting.append({
+                    "ts": ev.get("TimeCreated"),
+                    "user": user, "source_ip": source_ip,
+                    "severity": "high",
+                    "interpretation": "TGT with no pre-auth — AS-REP Roasting",
+                })
+            if user and source_ip:
+                tgt_sources.setdefault(user, set()).add(source_ip)
+
+        elif eid in (4771, 4773):
+            ticket_failures.append({
+                "ts": ev.get("TimeCreated"),
+                "user": user, "source_ip": source_ip,
+                "failure_code": ev.get("FailureCode") or ev.get("Status"),
+            })
+
+    # Users who requested TGTs from more than 3 distinct sources = suspicious
+    users_with_scattered_tgts = [
+        {"user": u, "source_count": len(ips), "sources": sorted(ips)}
+        for u, ips in tgt_sources.items() if len(ips) > 3
+    ]
+
+    severity = "info"
+    if kerberoasting or asrep_roasting:
+        severity = "high"
+    elif users_with_scattered_tgts or ticket_failures:
+        severity = "medium"
+
+    return {
+        "source": {"path": str(p), "sha256": _sha256(p)},
+        "events_examined": len(events),
+        "kerberoasting_candidates": kerberoasting,
+        "asrep_roasting_candidates": asrep_roasting,
+        "ticket_failures": ticket_failures,
+        "users_with_scattered_tgts": users_with_scattered_tgts,
+        "max_severity": severity,
+        "stats": {
+            "kerberoasting_count": len(kerberoasting),
+            "asrep_roasting_count": len(asrep_roasting),
+            "ticket_failure_count": len(ticket_failures),
+            "scattered_tgt_users": len(users_with_scattered_tgts),
+        },
+    }
+
+
+# Linux/macOS auth.log patterns
+_UNIX_AUTH_PATTERNS = [
+    ("ssh_accept", re.compile(
+        r"sshd\[\d+\]:\s+Accepted\s+(\S+)\s+for\s+(\S+)\s+from\s+(\S+)")),
+    ("ssh_fail", re.compile(
+        r"sshd\[\d+\]:\s+Failed\s+(\S+)\s+for\s+(?:invalid user\s+)?(\S+)\s+from\s+(\S+)")),
+    ("ssh_invalid_user", re.compile(
+        r"sshd\[\d+\]:\s+Invalid user\s+(\S+)\s+from\s+(\S+)")),
+    ("sudo_success", re.compile(
+        r"sudo:\s+(\S+)\s+:\s+TTY=(\S+)\s+;\s+PWD=(\S+)\s+;\s+USER=(\S+)\s+;\s+COMMAND=(.+)")),
+    ("sudo_fail", re.compile(
+        r"sudo:\s+(\S+)\s+:\s+(?:\d+ incorrect|authentication failure)")),
+    ("su_success", re.compile(
+        r"su(?:-l)?:\s+\(to (\S+)\)\s+(\S+)\s+on\s+(\S+)")),
+]
+
+
+@tool(
+    name="analyze_unix_auth",
+    description="Parse Linux/macOS auth.log for SSH accepts/failures, sudo "
+                "usage, and su escalations. Detects brute force, invalid-user "
+                "scans, sudo failures, and unusual remote sources.",
+    schema={"type": "object", "properties": {
+        "auth_log_path": {"type": "string"},
+        "time_window_start": {"type": "string"},
+        "time_window_end": {"type": "string"},
+        "brute_force_threshold": {"type": "integer", "default": 5},
+    }, "required": ["auth_log_path"]},
+)
+def analyze_unix_auth(auth_log_path, time_window_start=None,
+                      time_window_end=None, brute_force_threshold=5):
+    p = _safe_resolve(auth_log_path)
+    if not p.exists():
+        return {"error": "file_not_found", "path": str(p)}
+
+    text = p.read_text(encoding="utf-8", errors="replace")
+    sdt = _parse_ts(time_window_start) if time_window_start else None
+    edt = _parse_ts(time_window_end) if time_window_end else None
+
+    ssh_accepts = []
+    ssh_failures = []
+    ssh_invalid_users = []
+    sudo_success = []
+    sudo_fail = []
+    su_events = []
+
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+
+        # Parse syslog timestamp prefix: "Mar 15 14:22:00 host ..."
+        ts = None
+        tm = re.match(r"^([A-Z][a-z]{2})\s+(\d+)\s+(\d{1,2}:\d{2}:\d{2})", line)
+        if tm:
+            try:
+                # Assume current year 2026 (from evidence context)
+                ts = datetime.strptime(
+                    f"2026 {tm.group(1)} {tm.group(2)} {tm.group(3)}",
+                    "%Y %b %d %H:%M:%S")
+            except ValueError:
+                ts = None
+
+        if sdt and ts and ts < sdt:
+            continue
+        if edt and ts and ts > edt:
+            continue
+
+        ts_str = ts.isoformat() if ts else None
+
+        for kind, pat in _UNIX_AUTH_PATTERNS:
+            m = pat.search(line)
+            if not m:
+                continue
+            if kind == "ssh_accept":
+                ssh_accepts.append({
+                    "ts": ts_str, "method": m.group(1),
+                    "user": m.group(2), "source_ip": m.group(3),
+                })
+            elif kind == "ssh_fail":
+                ssh_failures.append({
+                    "ts": ts_str, "method": m.group(1),
+                    "user": m.group(2), "source_ip": m.group(3),
+                })
+            elif kind == "ssh_invalid_user":
+                ssh_invalid_users.append({
+                    "ts": ts_str, "user": m.group(1),
+                    "source_ip": m.group(2),
+                })
+            elif kind == "sudo_success":
+                sudo_success.append({
+                    "ts": ts_str, "user": m.group(1), "tty": m.group(2),
+                    "target_user": m.group(4), "command": m.group(5),
+                    "severity_hint": "high" if any(
+                        x in m.group(5).lower()
+                        for x in ("rm -rf", "dd if=", "curl", "wget",
+                                  "chmod 777", "/etc/passwd", "/etc/shadow")
+                    ) else "info",
+                })
+            elif kind == "sudo_fail":
+                sudo_fail.append({"ts": ts_str, "user": m.group(1)})
+            elif kind == "su_success":
+                su_events.append({
+                    "ts": ts_str, "target_user": m.group(1),
+                    "source_user": m.group(2), "tty": m.group(3),
+                })
+            break
+
+    # Brute force: same source IP with >= threshold failures
+    failures_by_ip = {}
+    for f in ssh_failures + [{"source_ip": u["source_ip"]}
+                               for u in ssh_invalid_users]:
+        ip = f.get("source_ip")
+        if ip:
+            failures_by_ip[ip] = failures_by_ip.get(ip, 0) + 1
+
+    brute_force_sources = [
+        {"source_ip": ip, "failure_count": n, "severity": "high"}
+        for ip, n in failures_by_ip.items() if n >= brute_force_threshold
+    ]
+
+    # Successful SSH logins from IPs that also brute-forced
+    brute_force_survivors = []
+    brute_ips = {b["source_ip"] for b in brute_force_sources}
+    for s in ssh_accepts:
+        if s.get("source_ip") in brute_ips:
+            brute_force_survivors.append({**s, "severity": "critical",
+                "interpretation": "successful SSH after brute force from same IP"})
+
+    # Dangerous sudo commands
+    dangerous_sudo = [s for s in sudo_success if s.get("severity_hint") == "high"]
+
+    return {
+        "source": {"path": str(p), "sha256": _sha256(p)},
+        "ssh_accept_count": len(ssh_accepts),
+        "ssh_failure_count": len(ssh_failures),
+        "ssh_invalid_user_count": len(ssh_invalid_users),
+        "sudo_success_count": len(sudo_success),
+        "sudo_fail_count": len(sudo_fail),
+        "su_count": len(su_events),
+        "brute_force_sources": brute_force_sources,
+        "brute_force_survivors": brute_force_survivors,
+        "dangerous_sudo_commands": dangerous_sudo,
+        "ssh_accepts": ssh_accepts[:100],
+        "ssh_failures_sample": ssh_failures[:100],
+    }
+
+
+@tool(
+    name="detect_privilege_escalation",
+    description="Cross-platform detection of low-privilege → high-privilege "
+                "transitions. On Windows: normal user logon followed by "
+                "SYSTEM-context process creation. On Unix: SSH as user then "
+                "sudo/su to root. Returns linked transitions with timing.",
+    schema={"type": "object", "properties": {
+        "logons":    {"type": "array",
+                      "description": "Windows logons (from analyze_windows_logons) "
+                                     "OR Unix SSH accepts (from analyze_unix_auth)"},
+        "privilege_events": {"type": "array",
+                             "description": "Sudo/su on Unix, or Windows "
+                                            "processes with user='SYSTEM' "
+                                            "or integrity_level='High'"},
+        "proximity_seconds": {"type": "integer", "default": 300},
+    }, "required": []},
+)
+def detect_privilege_escalation(logons=None, privilege_events=None,
+                                 proximity_seconds=300):
+    logons = logons or []
+    privilege_events = privilege_events or []
+
+    transitions = []
+    for pe in privilege_events:
+        pe_ts = _parse_ts(pe.get("ts") or "")
+        pe_user = pe.get("user") or pe.get("source_user") or ""
+        if pe_ts is None or not pe_user:
+            continue
+        # Find a preceding low-priv logon by this user
+        for lg in logons:
+            lg_ts = _parse_ts(lg.get("ts") or "")
+            lg_user = lg.get("user") or ""
+            if lg_ts is None or not lg_user:
+                continue
+            if lg_user.lower() != pe_user.lower():
+                continue
+            delta = (pe_ts - lg_ts).total_seconds()
+            if not (0 <= delta <= proximity_seconds):
+                continue
+            # Determine severity
+            target = (pe.get("target_user")
+                       or pe.get("target_account") or "").lower()
+            cmd = (pe.get("command") or pe.get("cmdline") or "").lower()
+            sev = "high"
+            if target in ("root", "administrator", "system") \
+               or "/bin/bash" in cmd or "powershell" in cmd:
+                sev = "critical"
+            transitions.append({
+                "user": lg_user,
+                "logon_ts": lg.get("ts"),
+                "logon_source_ip": lg.get("source_ip"),
+                "logon_type": lg.get("logon_type_name") or lg.get("method"),
+                "escalation_ts": pe.get("ts"),
+                "escalation_target": target,
+                "escalation_command": pe.get("command") or pe.get("cmdline"),
+                "delta_seconds": int(delta),
+                "severity": sev,
+            })
+
+    return {
+        "logon_count": len(logons),
+        "privilege_event_count": len(privilege_events),
+        "transitions": transitions,
+        "critical_transitions": [t for t in transitions
+                                  if t["severity"] == "critical"],
+    }
+
+
 def __forbidden_never_registered():
     """Intentionally NOT registered: execute_shell, write_file, mount,
     delete_file, network_egress, spawn_process, kill_process. See
