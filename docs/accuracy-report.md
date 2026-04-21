@@ -189,3 +189,29 @@ parse_knowledgec
 
 All four DFIR dimensions (WHAT, HOW, WHO, WHEN) are covered across
 Windows, macOS, and Linux.
+
+## Case 06 — Web/WAS Attack + RDP Brute Force (NEW)
+
+Closes the initial-access-vector gap. Covers web application exploitation,
+webshell detection with tuned precision, and RDP-specific brute-force
+classification (credential stuffing vs password spray vs single-account).
+
+| MCP call | Real output on bundled evidence |
+|---|---|
+| `analyze_web_access_log` | 27 lines, **13 attacks** across 5 rule classes (SQLi/LFI/SSRF/Log4Shell/RCE/webshell_upload), 19 scanner-UA hits, 1 scanning IP (198.51.100.77 at 65% error ratio) |
+| `detect_webshell` | 12 files scanned, **3 HIGH findings with 0 false positives** (x.php/shell.php/cmd.php), 3 age_anomalies confirming recent drops |
+| `detect_brute_force_rdp` | 15 RDP failures → 1 credential-stuffing IP (8 distinct users), 1 password-spray user (4 source IPs), **1 CRITICAL survivor** (jbang) |
+
+## Initial-access vector coverage (complete)
+
+```
+Path                            YuShin function
+───────────────────────────     ──────────────────────────────
+Phishing email                  parse_browser_history + analyze_downloads
+Web application attack          analyze_web_access_log  + detect_webshell
+RDP brute force / cred-stuff    detect_brute_force_rdp
+SSH brute force                 analyze_unix_auth
+SMB/NTLM relay                  analyze_windows_logons (type 3)
+Kerberos abuse                  analyze_kerberos_events
+IP-KVM / insider physical       analyze_usb_history + correlate_events
+```

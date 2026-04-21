@@ -2202,6 +2202,534 @@ def detect_privilege_escalation(logons=None, privilege_events=None,
     }
 
 
+# =============================================================================
+# WEB/WAS INTRUSION & RDP BRUTE FORCE (initial access vectors)
+# =============================================================================
+#
+# Two of the most common enterprise intrusion paths:
+#
+#   Web/WAS:   attack web app (SQLi/RCE/LFI/SSRF/deserialization)
+#              → get remote code execution
+#              → drop webshell or reverse shell
+#              → pivot to internal network
+#
+#   RDP/SSH brute force:  internet-exposed RDP or SSH
+#              → password spray / credential stuffing
+#              → successful logon
+#              → immediate interactive session
+#
+# YuShin previously covered post-auth behavior (analyze_windows_logons,
+# analyze_unix_auth) but did not specifically handle web-app attacks,
+# webshell detection, or RDP-specific brute-force detection.
+
+# Web-attack signatures (fast pre-filter; not a replacement for a WAF)
+WEB_ATTACK_PATTERNS = [
+    ("sqli_union",          re.compile(r"union\s+(?:all\s+)?select", re.I)),
+    ("sqli_tautology",      re.compile(r"(?:'|\")\s*or\s+(?:'|\"|\d+)\s*=\s*(?:'|\"|\d+)", re.I)),
+    ("sqli_sleep",          re.compile(r"(?:benchmark|sleep|pg_sleep|waitfor\s+delay)\s*\(", re.I)),
+    ("sqli_comment",        re.compile(r"(?:--|#|/\*)", re.I)),
+    ("xss_script",          re.compile(r"<script[^>]*>|javascript:", re.I)),
+    ("xss_event",           re.compile(r"\bon(?:error|load|click|mouseover)\s*=", re.I)),
+    ("lfi_traversal",       re.compile(r"(?:\.\.[\\/]){2,}|%2e%2e%2f|%2e%2e%5c", re.I)),
+    ("lfi_wrapper",         re.compile(r"(?:php://|file://|expect://|zip://)", re.I)),
+    ("rce_command",         re.compile(r"(?:;|\|\||&&|\|)\s*(?:cat|ls|id|whoami|wget|curl|nc|bash|sh|powershell)\b", re.I)),
+    ("rce_php",             re.compile(r"(?:system|exec|passthru|shell_exec|proc_open|eval)\s*\(", re.I)),
+    ("ssrf_cloud_metadata", re.compile(r"(?:169\.254\.169\.254|metadata\.google\.internal|metadata\.azure)", re.I)),
+    ("log4shell",           re.compile(r"\$\{jndi:(?:ldap|rmi|dns)://", re.I)),
+    ("spring4shell",        re.compile(r"class\.module\.classLoader", re.I)),
+    ("path_xss",            re.compile(r"%3cscript|%22%3e%3cscript", re.I)),
+    ("webshell_upload",     re.compile(r"\.(?:php|jsp|jspx|aspx|asp|phtml|war)(?:\?|$|\s)", re.I)),
+    ("deserialize_java",    re.compile(r"rO0(?:AB|AA)", )),  # base64 "\xac\xed\x00"
+]
+
+# Known scanner / pentest user-agents
+SCANNER_UA_PATTERNS = re.compile(
+    r"sqlmap|nikto|nmap|masscan|zap|burp|acunetix|nessus|nuclei|"
+    r"dirbuster|gobuster|wfuzz|ffuf|feroxbuster|whatweb|hydra|"
+    r"wpscan|joomscan|skipfish|arachni",
+    re.I,
+)
+
+# File extensions that are typically suspicious to find in web roots
+WEBSHELL_SUSPICIOUS_EXT = {".php", ".phtml", ".php3", ".php4", ".php5", ".php7",
+                            ".pht", ".phar", ".jsp", ".jspx", ".asp", ".aspx",
+                            ".ashx", ".cer", ".cdx"}
+
+# Functions/keywords commonly found inside webshells
+WEBSHELL_CONTENT_SIGS = [
+    re.compile(r"eval\s*\(\s*(?:base64_decode|gzinflate|str_rot13|\$_(?:POST|GET|REQUEST|COOKIE))", re.I),
+    re.compile(r"system\s*\(\s*\$_(?:POST|GET|REQUEST|COOKIE)", re.I),
+    re.compile(r"assert\s*\(\s*\$_(?:POST|GET|REQUEST|COOKIE)", re.I),
+    re.compile(r"shell_exec\s*\(\s*\$_", re.I),
+    re.compile(r"Runtime\.getRuntime\(\)\.exec", re.I),  # JSP
+    re.compile(r"Process\s+proc\s*=.*?\.exec", re.I),     # JSP
+    re.compile(r"Request\.Form\[[^\]]+\].*?(?:Process|Exec)", re.I),  # ASP.NET
+    re.compile(r"<%@\s*Page.*?%>.*?(?:Process\.Start|cmd\.exe)", re.I | re.S),
+    re.compile(r"c99shell|r57shell|WSO\s*\d|b374k|china\s*chopper|jspspy|kalinfo", re.I),
+    re.compile(r"preg_replace\s*\([^)]*?/e['\"]", re.I),  # preg_replace /e modifier
+]
+
+# Typical web document roots (for zero-arg scanning)
+DEFAULT_WEB_ROOTS = [
+    "var/www", "var/www/html", "srv/www", "srv/http",
+    "inetpub/wwwroot", "opt/tomcat/webapps", "opt/jetty/webapps",
+    "usr/share/nginx/html", "Library/WebServer/Documents",
+]
+
+
+@tool(
+    name="analyze_web_access_log",
+    description="Parse web server access logs (Apache/Nginx combined format, "
+                "IIS W3C) and flag web-attack patterns: SQLi, XSS, LFI, RCE, "
+                "SSRF, Log4Shell, webshell upload attempts. Also detects "
+                "scanner user-agents, 4xx/5xx spikes per source IP, and "
+                "long-URL anomalies.",
+    schema={"type": "object", "properties": {
+        "access_log": {"type": "string"},
+        "format": {"type": "string",
+                   "enum": ["combined", "common", "iis_w3c", "auto"],
+                   "default": "auto"},
+        "time_window_start": {"type": "string"},
+        "time_window_end": {"type": "string"},
+        "error_ratio_threshold": {"type": "number", "default": 0.5,
+                                   "description": "IPs with >= this ratio of 4xx/5xx flagged"},
+    }, "required": ["access_log"]},
+)
+def analyze_web_access_log(access_log, format="auto",
+                            time_window_start=None, time_window_end=None,
+                            error_ratio_threshold=0.5):
+    p = _safe_resolve(access_log)
+    if not p.exists():
+        return {"error": "file_not_found", "path": str(p)}
+
+    # Apache/Nginx combined:
+    #   1.2.3.4 - - [10/Oct/2026:13:55:36 +0000] "GET /x HTTP/1.1" 200 123 "ref" "UA"
+    combined_re = re.compile(
+        r'^(?P<ip>\S+)\s+\S+\s+\S+\s+\['
+        r'(?P<ts>[^\]]+)\]\s+"'
+        r'(?P<method>\S+)\s+(?P<path>\S+)\s+(?P<proto>[^"]+)"\s+'
+        r'(?P<status>\d+)\s+(?P<size>\S+)'
+        r'(?:\s+"(?P<ref>[^"]*)"\s+"(?P<ua>[^"]*)")?'
+    )
+    # IIS W3C:
+    #   #Fields: date time ... c-ip cs-method cs-uri-stem cs-uri-query sc-status ...
+
+    sdt = _parse_ts(time_window_start) if time_window_start else None
+    edt = _parse_ts(time_window_end) if time_window_end else None
+
+    total_lines = 0
+    attack_hits = []
+    scanner_hits = []
+    per_ip_stats = {}       # ip → {"total":n, "errors":n, "paths":set()}
+    long_url_hits = []
+
+    text = p.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        total_lines += 1
+        m = combined_re.match(line)
+        if not m:
+            # Try IIS W3C (space-separated fields after the header)
+            if line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 10:
+                continue
+            # Heuristic pick — IIS default column order
+            try:
+                ts_str = f"{parts[0]} {parts[1]}"
+                ts = _parse_ts(ts_str)
+                ip = parts[-4] if len(parts) > 4 else parts[2]
+                method = parts[3]
+                path = parts[4] + ("?" + parts[5] if parts[5] != "-" else "")
+                status = parts[-5]
+                ua = "-"
+            except (IndexError, ValueError):
+                continue
+        else:
+            ip = m.group("ip")
+            # Parse apache-style timestamp "10/Oct/2026:13:55:36 +0000"
+            ts = None
+            try:
+                ts = datetime.strptime(m.group("ts").split()[0],
+                                       "%d/%b/%Y:%H:%M:%S")
+            except ValueError:
+                pass
+            method = m.group("method")
+            path = m.group("path")
+            status = m.group("status")
+            ua = m.group("ua") or ""
+
+        if sdt and ts and ts < sdt:
+            continue
+        if edt and ts and ts > edt:
+            continue
+
+        try:
+            status_code = int(status)
+        except ValueError:
+            status_code = 0
+
+        # Per-IP counters
+        stat = per_ip_stats.setdefault(ip, {"total": 0, "errors": 0,
+                                             "paths": set(), "uas": set()})
+        stat["total"] += 1
+        if status_code >= 400:
+            stat["errors"] += 1
+        stat["paths"].add(path[:128])
+        stat["uas"].add(ua[:80])
+
+        # Scanner UA
+        if ua and SCANNER_UA_PATTERNS.search(ua):
+            scanner_hits.append({"ts": ts.isoformat() if ts else None,
+                                  "ip": ip, "user_agent": ua,
+                                  "path": path[:200]})
+
+        # Attack pattern matching (on method + path + UA)
+        combined_text = f"{method} {path} {ua}"
+        for rule_id, pat in WEB_ATTACK_PATTERNS:
+            if pat.search(combined_text):
+                attack_hits.append({
+                    "ts": ts.isoformat() if ts else None,
+                    "ip": ip, "method": method,
+                    "path": path[:300], "status": status_code,
+                    "user_agent": ua[:120], "rule": rule_id,
+                    "severity": "high" if rule_id in (
+                        "rce_php", "log4shell", "deserialize_java",
+                        "spring4shell", "rce_command", "ssrf_cloud_metadata"
+                    ) else "medium",
+                })
+                break
+
+        # Long URL anomaly (> 2KB usually means payload stuffing)
+        if len(path) > 2048:
+            long_url_hits.append({"ts": ts.isoformat() if ts else None,
+                                   "ip": ip, "path_len": len(path),
+                                   "path_sample": path[:200]})
+
+    # Brute-scan IPs: many errors + many distinct paths
+    scanning_ips = []
+    for ip, s in per_ip_stats.items():
+        ratio = s["errors"] / s["total"] if s["total"] else 0
+        if s["total"] >= 20 and (ratio >= error_ratio_threshold
+                                  or len(s["paths"]) >= 50):
+            scanning_ips.append({
+                "ip": ip, "request_count": s["total"],
+                "error_count": s["errors"],
+                "error_ratio": round(ratio, 3),
+                "distinct_paths": len(s["paths"]),
+                "user_agents": sorted(s["uas"])[:5],
+                "severity": "high" if ratio >= 0.8 else "medium",
+            })
+
+    severity = "info"
+    sev_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    for h in attack_hits + scanning_ips:
+        if sev_rank.get(h.get("severity", "info"), 0) > sev_rank.get(severity, 0):
+            severity = h.get("severity")
+
+    return {
+        "source": {"path": str(p), "sha256": _sha256(p)},
+        "lines_examined": total_lines,
+        "attack_hits": attack_hits[:200],
+        "attack_count": len(attack_hits),
+        "scanner_ua_hits": scanner_hits[:100],
+        "scanner_ua_count": len(scanner_hits),
+        "scanning_ips": scanning_ips,
+        "long_url_anomalies": long_url_hits[:50],
+        "max_severity": severity,
+        "stats": {
+            "unique_ips": len(per_ip_stats),
+            "attack_patterns_matched": len(set(h["rule"] for h in attack_hits)),
+            "scanners": len(scanner_hits),
+        },
+    }
+
+
+@tool(
+    name="detect_webshell",
+    description="Scan a web document root for likely webshells: suspicious "
+                "file extensions in user-writable dirs, files containing "
+                "eval(base64_decode($_POST)) / system($_GET) / JSP Runtime."
+                "exec, recent modifications compared to the rest of the tree, "
+                "and known shell names (c99, r57, WSO, china chopper).",
+    schema={"type": "object", "properties": {
+        "webroot": {"type": "string",
+                    "description": "path inside EVIDENCE_ROOT to the web docroot"},
+        "max_file_size": {"type": "integer", "default": 524288,
+                          "description": "skip files larger than this (bytes)"},
+        "max_files_scanned": {"type": "integer", "default": 5000},
+    }, "required": ["webroot"]},
+)
+def detect_webshell(webroot, max_file_size=524288, max_files_scanned=5000):
+    p = _safe_resolve(webroot)
+    if not p.exists():
+        return {"error": "file_not_found", "path": str(p)}
+
+    if not p.is_dir():
+        return {"error": "not_a_directory", "path": str(p)}
+
+    findings = []
+    scanned = 0
+    mtimes_by_dir = {}  # establish baseline mtime per dir
+
+    for f in p.rglob("*"):
+        if scanned >= max_files_scanned:
+            break
+        if not f.is_file():
+            continue
+        scanned += 1
+
+        ext = f.suffix.lower()
+        try:
+            stat = f.stat()
+        except OSError:
+            continue
+
+        parent = str(f.parent)
+        mtimes_by_dir.setdefault(parent, []).append(stat.st_mtime)
+
+        # Fast reject: wrong extension AND too big → skip
+        if ext not in WEBSHELL_SUSPICIOUS_EXT and stat.st_size > max_file_size:
+            continue
+
+        signals = []
+
+        # Signal: suspicious extension in user-writable / upload-style dirs
+        # (not every .php file is a webshell — only flag extension alone
+        # when path indicates an upload/temp location)
+        path_lower = str(f.relative_to(p)).lower().replace("\\", "/")
+        in_upload_dir = any(
+            seg in path_lower
+            for seg in ("/upload", "/temp", "/tmp/", "/cache/",
+                        "/backup", "/attach", "/writable")
+        )
+        if ext in WEBSHELL_SUSPICIOUS_EXT and in_upload_dir:
+            signals.append(f"suspicious_extension_in_writable_dir:{ext}")
+
+        # Signal: filename patterns associated with known shells
+        # Exact filename match, not substring — avoids "index.php" hitting "x.php"
+        name_lower = f.name.lower()
+        exact_bad_names = {
+            "c99.php", "r57.php", "wso.php", "b374k.php", "chopper.php",
+            "shell.php", "cmd.php", "cmd.jsp", "cmd.aspx", "x.php",
+            "pass.php", "up.php", "fm.php", "webshell.php", "0.aspx",
+            "jspspy.jsp", "kalinfo.php", "cmd2.php", "sh.php",
+        }
+        substr_bad_names = ("c99shell", "r57shell", "china_chopper",
+                             "jspspy", "kalinfo", "b374k", "webshell",
+                             "wso2", "bypass.php")
+        if name_lower in exact_bad_names:
+            signals.append(f"suspicious_filename:{name_lower}")
+        elif any(bad in name_lower for bad in substr_bad_names):
+            matched = next(bad for bad in substr_bad_names if bad in name_lower)
+            signals.append(f"suspicious_filename:{matched}")
+
+        # Signal: content-match (only on files we can read cheaply)
+        if stat.st_size <= max_file_size and ext in WEBSHELL_SUSPICIOUS_EXT:
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")
+                for sig in WEBSHELL_CONTENT_SIGS:
+                    if sig.search(content):
+                        signals.append("content_match")
+                        break
+                # Entropy check: obfuscated shells often look like base64
+                if "base64_decode" in content and "eval" in content:
+                    signals.append("eval_base64_pattern")
+                if content.count("\\x") > 20 and ext == ".php":
+                    signals.append("hex_encoded_php")
+            except Exception:
+                pass
+
+        if signals:
+            findings.append({
+                "path": str(f.relative_to(EVIDENCE_ROOT)),
+                "size": stat.st_size,
+                "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "ext": ext,
+                "signals": signals,
+                "severity": "high" if "content_match" in signals
+                                     or "eval_base64_pattern" in signals
+                                     or any(s.startswith("suspicious_filename")
+                                            for s in signals)
+                            else "medium",
+            })
+
+    # Age anomaly: file whose mtime is > 30 days newer than directory median
+    age_anomalies = []
+    for finding in findings:
+        try:
+            f = EVIDENCE_ROOT / finding["path"]
+            parent = str(f.parent)
+            mtimes = mtimes_by_dir.get(parent, [])
+            if len(mtimes) < 5:
+                continue
+            median_mtime = sorted(mtimes)[len(mtimes)//2]
+            file_mtime = f.stat().st_mtime
+            if file_mtime - median_mtime > 30 * 86400:
+                age_anomalies.append({
+                    "path": finding["path"],
+                    "days_newer_than_median": int(
+                        (file_mtime - median_mtime) / 86400),
+                })
+        except Exception:
+            continue
+
+    return {
+        "source": {"path": str(p)},
+        "files_scanned": scanned,
+        "findings": findings,
+        "finding_count": len(findings),
+        "high_severity_count": sum(1 for f in findings if f["severity"] == "high"),
+        "age_anomalies": age_anomalies,
+        "max_severity": ("high" if any(f["severity"] == "high" for f in findings)
+                         else ("medium" if findings else "info")),
+    }
+
+
+@tool(
+    name="detect_brute_force_rdp",
+    description="RDP-specific brute force detection. Analyzes Windows Security "
+                "events 4625 (failed logon) with LogonType=10 (RDP) — unlike "
+                "the generic analyze_windows_logons this groups failures per "
+                "source IP, identifies credential-stuffing patterns (many "
+                "distinct users from one IP), password-spray (one user from "
+                "many IPs), and chains each brute-force IP to its eventual "
+                "successful 4624 Type-10 logon.",
+    schema={"type": "object", "properties": {
+        "security_events_json": {"type": "string"},
+        "threshold_failures": {"type": "integer", "default": 5},
+        "spray_distinct_users_threshold": {"type": "integer", "default": 5},
+    }, "required": ["security_events_json"]},
+)
+def detect_brute_force_rdp(security_events_json, threshold_failures=5,
+                            spray_distinct_users_threshold=5):
+    p = _safe_resolve(security_events_json)
+    if not p.exists():
+        return {"error": "file_not_found", "path": str(p)}
+
+    text = p.read_text(encoding="utf-8", errors="replace")
+    events = []
+    try:
+        parsed = json.loads(text)
+        events = parsed if isinstance(parsed, list) else [parsed]
+    except json.JSONDecodeError:
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+    rdp_failures = []
+    rdp_successes = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        try:
+            eid = int(ev.get("EventID") or ev.get("event_id") or 0)
+            logon_type = int(ev.get("LogonType") or ev.get("logon_type") or 0)
+        except (TypeError, ValueError):
+            continue
+        if logon_type != 10:
+            continue
+        record = {
+            "ts": ev.get("TimeCreated") or ev.get("timestamp"),
+            "user": (ev.get("TargetUserName") or "").lower(),
+            "source_ip": ev.get("IpAddress") or ev.get("source_ip"),
+            "source_host": ev.get("WorkstationName"),
+        }
+        if eid == 4625:
+            rdp_failures.append(record)
+        elif eid == 4624:
+            rdp_successes.append(record)
+
+    # Per-IP statistics
+    ip_stats = {}
+    for f in rdp_failures:
+        ip = f.get("source_ip")
+        if not ip or ip == "-":
+            continue
+        s = ip_stats.setdefault(ip, {"fails": 0, "users_tried": set(),
+                                      "first_ts": None, "last_ts": None})
+        s["fails"] += 1
+        if f["user"]:
+            s["users_tried"].add(f["user"])
+        if not s["first_ts"] or (f["ts"] or "") < s["first_ts"]:
+            s["first_ts"] = f["ts"]
+        if not s["last_ts"] or (f["ts"] or "") > s["last_ts"]:
+            s["last_ts"] = f["ts"]
+
+    # Classify
+    brute_force_ips = []
+    credential_stuffing_ips = []
+    for ip, s in ip_stats.items():
+        if s["fails"] < threshold_failures:
+            continue
+        record = {
+            "source_ip": ip,
+            "failure_count": s["fails"],
+            "distinct_users_tried": len(s["users_tried"]),
+            "users_sample": sorted(s["users_tried"])[:10],
+            "first_ts": s["first_ts"], "last_ts": s["last_ts"],
+            "severity": "high" if s["fails"] >= threshold_failures * 3 else "medium",
+        }
+        if len(s["users_tried"]) >= spray_distinct_users_threshold:
+            record["pattern"] = "credential_stuffing"
+            credential_stuffing_ips.append(record)
+        else:
+            record["pattern"] = "single_account_brute_force"
+            brute_force_ips.append(record)
+
+    # Password spray: one user tried from many IPs
+    user_ip_counts = {}
+    for f in rdp_failures:
+        u = f["user"]
+        ip = f.get("source_ip")
+        if u and ip and ip != "-":
+            user_ip_counts.setdefault(u, set()).add(ip)
+    password_spray_users = [
+        {"user": u, "source_ip_count": len(ips),
+         "source_ips": sorted(ips)[:10], "severity": "high"}
+        for u, ips in user_ip_counts.items() if len(ips) >= 3
+    ]
+
+    # Survivors: successful 4624 type 10 from an IP that brute-forced
+    brute_ips_set = {r["source_ip"] for r in brute_force_ips + credential_stuffing_ips}
+    survivors = []
+    for s in rdp_successes:
+        if s.get("source_ip") in brute_ips_set:
+            survivors.append({
+                **s,
+                "severity": "critical",
+                "interpretation": "successful RDP logon after brute force from same IP",
+            })
+
+    max_sev = "info"
+    sev_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    for rec in brute_force_ips + credential_stuffing_ips + password_spray_users + survivors:
+        if sev_rank.get(rec.get("severity", "info"), 0) > sev_rank.get(max_sev, 0):
+            max_sev = rec["severity"]
+
+    return {
+        "source": {"path": str(p), "sha256": _sha256(p)},
+        "rdp_failure_count": len(rdp_failures),
+        "rdp_success_count": len(rdp_successes),
+        "brute_force_ips": brute_force_ips,
+        "credential_stuffing_ips": credential_stuffing_ips,
+        "password_spray_users": password_spray_users,
+        "survivors": survivors,
+        "max_severity": max_sev,
+        "stats": {
+            "attack_ips": len(brute_force_ips) + len(credential_stuffing_ips),
+            "survivors_count": len(survivors),
+            "spray_users": len(password_spray_users),
+        },
+    }
+
+
 def __forbidden_never_registered():
     """Intentionally NOT registered: execute_shell, write_file, mount,
     delete_file, network_egress, spawn_process, kill_process. See

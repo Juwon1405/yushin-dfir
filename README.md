@@ -113,18 +113,19 @@ The MVP demo case exercises the IP-KVM remote-hands pattern end-to-end.
 
 Runs on SIFT Workstation (primary), Ubuntu, and **macOS 12+** (Intel and Apple Silicon). See [`docs/running-on-macos.md`](./docs/running-on-macos.md) for the 5-minute macOS quickstart.
 
-YuShin covers **24 forensic functions** across the full DFIR attack surface:
+YuShin covers **27 forensic functions** across the full DFIR attack surface:
 
 - **Windows system (10):** Amcache, Prefetch, ShimCache, MFT, USB history, ShellBags, Scheduled Tasks, Persistence (Run keys/Services/Tasks), Event Logs, Process tree with LOTL detection
 - **macOS system (3):** UnifiedLog (rule pack), KnowledgeC (SQLite), FSEvents
 - **Browser + exfiltration (4):** Chrome/Edge/Firefox/Safari history, download records + Mark-of-the-Web, download-to-execution chain correlation, exfiltration pattern detection
 - **Authentication + lateral movement (5):** Windows Security log (4624/4625/4648), AD/Kerberos attack detection (Kerberoasting RC4, AS-REP Roasting), Unix auth.log (SSH/sudo/su), PsExec/WMIExec/WinRM detection, cross-platform privilege escalation
+- **Web/WAS + RDP brute force (3):** Apache/Nginx/IIS access log with SQLi/LFI/SSRF/Log4Shell/RCE detection, webshell detection (filename + content + age anomaly), RDP-specific brute force (credential stuffing vs password spray vs single-account)
 - **Cross-artifact correlation (2):** `correlate_events` (proximity join), `correlate_timeline` (DuckDB scale engine)
 
 Full kill-chain coverage:
-`phishing → browser download (MOTW) → execution → authentication (WHO) → persistence → lateral movement → C2 → data exfiltration`
+`phishing email / web attack / RDP brute force → execution → authentication (WHO) → persistence → lateral movement → C2 → data exfiltration`
 
-Four DFIR dimensions — **WHAT** ran, **HOW** it got in, **WHO** authenticated, **WHEN** — all covered across Windows, macOS, and Linux.
+Four DFIR dimensions — **WHAT** ran, **HOW** it got in, **WHO** authenticated, **WHEN** — all covered across Windows, macOS, and Linux. Initial-access vectors covered: phishing, web attack, RDP/SSH brute force, SMB, Kerberos abuse, physical IP-KVM insider.
 
 
 ## Live mode (real Claude API + MCP stdio)

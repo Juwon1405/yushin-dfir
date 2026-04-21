@@ -46,7 +46,7 @@ def test_live_mode_subprocess_dryrun():
         # Check stderr for handshake banner
         assert "MCP handshake OK" in result.stderr, \
             f"MCP handshake banner missing:\n{result.stderr}"
-        assert "24 tools visible" in result.stderr, \
+        assert "27 tools visible" in result.stderr, \
             f"Expected 15 tools over the wire:\n{result.stderr}"
 
         # Outputs exist
@@ -105,6 +105,9 @@ def test_live_mcp_server_advertises_correct_surface():
         "analyze_windows_logons", "detect_lateral_movement",
         "analyze_kerberos_events", "analyze_unix_auth",
         "detect_privilege_escalation",
+        # Web/WAS + RDP brute force (initial access vectors)
+        "analyze_web_access_log", "detect_webshell",
+        "detect_brute_force_rdp",
     }
     assert advertised == expected, \
         f"wire surface drift:\n" \
