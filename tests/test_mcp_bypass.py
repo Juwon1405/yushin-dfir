@@ -101,6 +101,9 @@ def test_surface_is_exact_positive_and_negative_set():
         # Web/WAS + RDP brute force (initial access vectors)
         "analyze_web_access_log", "detect_webshell",
         "detect_brute_force_rdp",
+        # MITRE ATT&CK gap-fillers (credentials, ransomware, evasion, discovery)
+        "detect_credential_access", "detect_ransomware_behavior",
+        "detect_defense_evasion", "detect_discovery",
     }
     negative = {"execute_shell", "write_file", "mount", "umount", "eval",
                 "exec_python", "network_egress", "delete_file", "system",

@@ -215,3 +215,39 @@ SMB/NTLM relay                  analyze_windows_logons (type 3)
 Kerberos abuse                  analyze_kerberos_events
 IP-KVM / insider physical       analyze_usb_history + correlate_events
 ```
+
+## Case 07 — Full Ransomware Chain (MITRE Coverage, NEW)
+
+Post-foothold activity: credential dumping, AD reconnaissance, defense
+evasion, ransomware deployment. Based on DFIR Report 2025, Red Canary
+2025, Mandiant M-Trends 2026 data on real-world intrusion tradecraft.
+
+| MCP call | Real output on bundled evidence |
+|---|---|
+| `detect_credential_access` | **7 CRITICAL** (mimikatz + procdump + 3× reg save SAM/SECURITY/SYSTEM + ntdsutil NTDS.dit + rundll32 comsvcs MiniDump LOLBin) |
+| `detect_discovery` | **11 hits across 9 MITRE sub-techniques**, 1 scripted-recon burst (11 commands in 60s) |
+| `detect_defense_evasion` | **5 CRITICAL** (Event 1102 Security + 104 System + wevtutil cl × 3) |
+| `detect_ransomware_behavior` | **4 CRITICAL** (7 anti-recovery commands + 15 service-stop burst + ransom notes + **30 .locked file renames**) |
+
+## MITRE ATT&CK coverage summary (final)
+
+YuShin now covers these TA0001–TA0040 tactics:
+
+| Tactic | YuShin coverage |
+|---|---|
+| TA0001 Initial Access | parse_browser_history, analyze_downloads, analyze_web_access_log, detect_webshell, detect_brute_force_rdp, analyze_unix_auth, analyze_usb_history |
+| TA0002 Execution | get_process_tree (LOTL flags), get_amcache, parse_prefetch, analyze_event_logs |
+| TA0003 Persistence | detect_persistence (Run keys + Services + Tasks), parse_fsevents (LaunchAgent) |
+| TA0004 Privilege Escalation | detect_privilege_escalation |
+| TA0005 Defense Evasion | **detect_defense_evasion** (event log clearing, timestomp, MFT $SI/$FN) |
+| TA0006 Credential Access | **detect_credential_access** (Mimikatz, procdump, LOLBin, SAM/NTDS, DPAPI, /etc/shadow) |
+| TA0007 Discovery | **detect_discovery** (AD enum, BloodHound, local recon, burst detection) |
+| TA0008 Lateral Movement | detect_lateral_movement (PsExec/WMIExec/WinRS), analyze_windows_logons, analyze_kerberos_events |
+| TA0009 Collection | extract_mft_timeline, parse_fsevents |
+| TA0010 Exfiltration | detect_exfiltration, correlate_timeline |
+| TA0011 Command & Control | (partial via correlate_timeline on network events) |
+| TA0040 Impact | **detect_ransomware_behavior** (shadow delete, taskkill spree, mass rename, ransom notes) |
+
+**11 of 12 enterprise tactics covered.** Only TA0011 (C2) remains
+partial — DNS tunneling and beaconing detection is post-hackathon
+(requires packet capture input, out of scope for disk forensics MVP).

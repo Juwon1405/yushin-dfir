@@ -30,6 +30,9 @@ def test_registered_tools_are_exact_set():
         # Web/WAS + RDP brute force (initial access vectors)
         "analyze_web_access_log", "detect_webshell",
         "detect_brute_force_rdp",
+        # MITRE ATT&CK gap-fillers (credentials, ransomware, evasion, discovery)
+        "detect_credential_access", "detect_ransomware_behavior",
+        "detect_defense_evasion", "detect_discovery",
     }
     assert names == expected, f"surface drift: {names ^ expected}"
 

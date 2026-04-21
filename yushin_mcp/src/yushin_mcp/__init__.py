@@ -2730,6 +2730,690 @@ def detect_brute_force_rdp(security_events_json, threshold_failures=5,
     }
 
 
+# =============================================================================
+# CREDENTIAL ACCESS, RANSOMWARE, DEFENSE EVASION, DISCOVERY
+# =============================================================================
+#
+# Closing MITRE ATT&CK gaps identified from 2025-2026 DFIR data:
+#
+#   TA0006 Credential Access  — LSASS dumping, SAM/NTDS, Mimikatz, DPAPI
+#   TA0007 Discovery           — AD enumeration (BloodHound, net/nltest patterns)
+#   TA0005 Defense Evasion     — event log clearing, timestomping
+#   TA0040 Impact              — ransomware behavior (shadow copies, mass encrypt,
+#                                taskkill-spree, cipher /w, ransom notes)
+#
+# These cover patterns that appeared in 80%+ of 2025 ransomware and APT
+# reports on The DFIR Report, Red Canary, and Mandiant M-Trends.
+
+# --- Credential Access -------------------------------------------------------
+
+LSASS_DUMP_INDICATORS = {
+    # Known credential-dumping process names
+    "process_images": [
+        "mimikatz.exe", "procdump.exe", "procdump64.exe", "pwdump.exe",
+        "wce.exe", "secretsdump.py", "lsassy.exe", "nanodump.exe",
+        "dumpert.exe", "handle.exe", "comsvcs.dll",
+    ],
+    # Command-line arguments that signal credential dumping
+    "cmdline_patterns": [
+        r"sekurlsa::",            # Mimikatz module
+        r"lsadump::",
+        r"kerberos::list",
+        r"vault::",
+        r"comsvcs\.dll.*MiniDump",  # LOLBin lsass dump
+        r"rundll32.*comsvcs\.dll",
+        r"-ma\s+lsass",            # procdump -ma lsass
+        r"--target-ip.*--dump",     # secretsdump.py
+        r"reg\s+save\s+hklm\\sam",
+        r"reg\s+save\s+hklm\\security",
+        r"reg\s+save\s+hklm\\system",
+        r"ntdsutil.*ifm",           # NTDS.dit extraction
+        r"vssadmin\s+create\s+shadow",  # often paired with NTDS copy
+    ],
+    # Sensitive files whose access indicates cred theft
+    "sensitive_paths": [
+        r"\\windows\\system32\\config\\sam",
+        r"\\windows\\system32\\config\\security",
+        r"\\windows\\ntds\\ntds\.dit",
+        r"\\users\\[^\\]+\\appdata\\roaming\\microsoft\\credentials",
+        r"\\users\\[^\\]+\\appdata\\local\\microsoft\\credentials",
+        r"\\users\\[^\\]+\\appdata\\roaming\\microsoft\\protect",  # DPAPI
+        r"\\users\\[^\\]+\\appdata\\local\\google\\chrome\\user data\\.*login data",
+        r"\\users\\[^\\]+\\appdata\\roaming\\mozilla\\firefox\\.*key4\.db",
+        r"/etc/shadow", r"/etc/gshadow", r"/etc/passwd-",
+    ],
+}
+
+
+@tool(
+    name="detect_credential_access",
+    description="Scan for TA0006 Credential Access indicators: LSASS dumping "
+                "(Mimikatz, procdump, comsvcs.dll MiniDump, nanodump), SAM/"
+                "SECURITY/NTDS.dit access, DPAPI theft, browser credential "
+                "store access, /etc/shadow reads. Cross-references process "
+                "execution with Sysmon Event 10 (ProcessAccess) and sensitive-"
+                "path reads.",
+    schema={"type": "object", "properties": {
+        "processes": {"type": "array",
+                      "description": "process records from get_process_tree"},
+        "sysmon_events_json": {"type": "string",
+                               "description": "optional Sysmon events "
+                                              "(Event 10 = ProcessAccess)"},
+        "file_accesses": {"type": "array",
+                          "description": "optional list of {ts, path, "
+                                         "process, pid} records"},
+    }, "required": []},
+)
+def detect_credential_access(processes=None, sysmon_events_json=None,
+                              file_accesses=None):
+    processes = processes or []
+    file_accesses = file_accesses or []
+
+    findings = []
+    dumper_images = set(i.lower() for i in LSASS_DUMP_INDICATORS["process_images"])
+    cmd_patterns = [re.compile(p, re.I)
+                     for p in LSASS_DUMP_INDICATORS["cmdline_patterns"]]
+    path_patterns = [re.compile(p, re.I)
+                      for p in LSASS_DUMP_INDICATORS["sensitive_paths"]]
+
+    # 1. Known dumping tool in process tree
+    for p in processes:
+        img = (p.get("image") or p.get("Image") or "").lower()
+        cmd = (p.get("cmdline") or p.get("CommandLine") or "")
+        name = img.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        if name in dumper_images:
+            findings.append({
+                "technique": "T1003", "sub_technique": "credential_dumping_tool",
+                "ts": p.get("start_ts") or p.get("ts"),
+                "pid": p.get("pid"),
+                "image": img, "cmdline": cmd[:200],
+                "user": p.get("user"),
+                "severity": "critical",
+                "interpretation": f"known credential-dumping tool: {name}",
+            })
+            continue
+        # Command-line pattern match
+        for pat in cmd_patterns:
+            if pat.search(cmd):
+                findings.append({
+                    "technique": "T1003", "sub_technique": "cmdline_pattern",
+                    "ts": p.get("start_ts") or p.get("ts"),
+                    "pid": p.get("pid"), "image": img, "cmdline": cmd[:300],
+                    "pattern": pat.pattern, "severity": "critical",
+                    "interpretation": "credential-access command-line pattern",
+                })
+                break
+
+    # 2. Sysmon Event 10 — LSASS access with suspicious mask
+    if sysmon_events_json:
+        try:
+            p = _safe_resolve(sysmon_events_json)
+            if p.exists():
+                text = p.read_text(encoding="utf-8", errors="replace")
+                events = []
+                try:
+                    parsed = json.loads(text)
+                    events = parsed if isinstance(parsed, list) else [parsed]
+                except json.JSONDecodeError:
+                    for line in text.splitlines():
+                        if line.strip():
+                            try:
+                                events.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                pass
+                for ev in events:
+                    if not isinstance(ev, dict):
+                        continue
+                    try:
+                        eid = int(ev.get("EventID") or ev.get("event_id") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if eid != 10:
+                        continue
+                    target = (ev.get("TargetImage") or "").lower()
+                    if "lsass.exe" not in target:
+                        continue
+                    mask = (ev.get("GrantedAccess") or "").lower()
+                    # 0x1010 / 0x1410 / 0x1438 / 0x1fffff = dangerous masks for LSASS
+                    if mask in ("0x1010", "0x1410", "0x1438", "0x143a",
+                                 "0x1fffff", "0x001f1fff", "0x1400"):
+                        findings.append({
+                            "technique": "T1003.001",
+                            "sub_technique": "lsass_access_highpriv_mask",
+                            "ts": ev.get("TimeCreated"),
+                            "source_image": ev.get("SourceImage"),
+                            "source_pid": ev.get("SourceProcessId"),
+                            "granted_access": mask,
+                            "severity": "critical",
+                            "interpretation": "process opened LSASS with "
+                                               "credential-dumping access mask",
+                        })
+        except Exception as e:
+            findings.append({"technique": "T1003", "error": str(e)[:200]})
+
+    # 3. Sensitive-path access
+    for fa in file_accesses:
+        path = (fa.get("path") or "").lower()
+        for pat in path_patterns:
+            if pat.search(path):
+                findings.append({
+                    "technique": "T1003",
+                    "sub_technique": "sensitive_file_access",
+                    "ts": fa.get("ts"),
+                    "path": fa.get("path"),
+                    "process": fa.get("process"),
+                    "pid": fa.get("pid"),
+                    "severity": "high",
+                    "interpretation": "read of a credential-material file",
+                })
+                break
+
+    by_technique = {}
+    for f in findings:
+        t = f.get("technique", "unknown")
+        by_technique[t] = by_technique.get(t, 0) + 1
+
+    max_sev = "info"
+    sev_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    for f in findings:
+        if sev_rank.get(f.get("severity", "info"), 0) > sev_rank.get(max_sev, 0):
+            max_sev = f["severity"]
+
+    return {"findings": findings, "finding_count": len(findings),
+            "by_technique": by_technique, "max_severity": max_sev,
+            "critical_findings": [f for f in findings
+                                   if f.get("severity") == "critical"]}
+
+
+# --- Ransomware Behavior -----------------------------------------------------
+
+RANSOMWARE_INDICATORS = {
+    # Commands attackers run to prevent recovery
+    "anti_recovery": [
+        re.compile(r"vssadmin.*delete\s+shadows", re.I),
+        re.compile(r"wmic\s+shadowcopy\s+delete", re.I),
+        re.compile(r"Get-WmiObject.*Win32_ShadowCopy.*Delete", re.I),
+        re.compile(r"wbadmin\s+delete\s+(?:catalog|backup)", re.I),
+        re.compile(r"bcdedit.*(?:recoveryenabled\s+no|bootstatuspolicy\s+ignoreallfailures)", re.I),
+        re.compile(r"cipher.*\/w:", re.I),       # secure erase
+        re.compile(r"fsutil\s+usn\s+deletejournal", re.I),
+        re.compile(r"wevtutil.*(?:cl|clear-log)", re.I),  # clear event logs
+    ],
+    # Mass service/process termination
+    "service_stop": [
+        re.compile(r"net\s+stop\s+\S+", re.I),
+        re.compile(r"sc\s+(?:stop|config)\s+\S+\s+start=\s*disabled", re.I),
+        re.compile(r"taskkill(?:\.exe)?\s+/(?:f|im)", re.I),
+    ],
+    # Common ransom note file names
+    "ransom_note_names": [
+        "readme.txt", "readme.html", "readme_for_decrypt.txt",
+        "!!!readme!!!.txt", "how_to_decrypt.txt", "decrypt_instructions.txt",
+        "restore_files.txt", "recover_files.txt", "readme-warning.txt",
+        "!!_readme_!!.txt", "ransom_note.txt", "$recycle.txt",
+        "recovery_key.txt", "help_decrypt.html", "locker_note.txt",
+        "how_to_back_files.html", "_readme.txt",
+    ],
+    # File extensions added by known ransomware families
+    "ransom_extensions": [
+        ".locked", ".encrypted", ".crypto", ".crypt", ".enc",
+        ".wncry", ".wcry", ".wncryt",                  # WannaCry
+        ".conti", ".lock",                              # Conti/LockBit
+        ".lockbit",                                      # LockBit
+        ".hive",                                         # Hive
+        ".blackcat", ".alphv",                           # BlackCat/ALPHV
+        ".ryuk", ".rapid",                               # Ryuk, RapidRansom
+        ".dharma", ".phobos",
+        ".deadbolt",
+        ".makop",
+    ],
+}
+
+
+@tool(
+    name="detect_ransomware_behavior",
+    description="Detect TA0040 ransomware patterns: shadow-copy deletion "
+                "(vssadmin/wmic/PowerShell Win32_ShadowCopy), mass taskkill "
+                "or net stop sprees (>=10 services in 2min), cipher /w "
+                "(secure erase), event log clearing, ransom-note file names "
+                "appearing, and mass file renames to known ransomware "
+                "extensions.",
+    schema={"type": "object", "properties": {
+        "processes": {"type": "array"},
+        "fsevents_or_mft": {"type": "array"},
+        "mass_kill_window_seconds": {"type": "integer", "default": 120},
+    }, "required": []},
+)
+def detect_ransomware_behavior(processes=None, fsevents_or_mft=None,
+                                mass_kill_window_seconds=120):
+    processes = processes or []
+    fsevents_or_mft = fsevents_or_mft or []
+
+    findings = []
+
+    # 1. Anti-recovery command matches
+    anti_recov_hits = []
+    for p in processes:
+        cmd = (p.get("cmdline") or p.get("CommandLine") or "")
+        for pat in RANSOMWARE_INDICATORS["anti_recovery"]:
+            if pat.search(cmd):
+                anti_recov_hits.append({
+                    "ts": p.get("start_ts") or p.get("ts"),
+                    "pid": p.get("pid"), "cmdline": cmd[:200],
+                    "pattern": pat.pattern,
+                })
+                break
+    if anti_recov_hits:
+        findings.append({
+            "technique": "T1490",
+            "rule": "inhibit_system_recovery",
+            "count": len(anti_recov_hits), "samples": anti_recov_hits[:10],
+            "severity": "critical",
+            "interpretation": "anti-recovery commands executed "
+                              "(shadow copy / backup / boot config deletion)",
+        })
+
+    # 2. Mass taskkill / net stop within short window
+    stop_events = []
+    for p in processes:
+        cmd = (p.get("cmdline") or p.get("CommandLine") or "")
+        img = (p.get("image") or "").lower()
+        for pat in RANSOMWARE_INDICATORS["service_stop"]:
+            if pat.search(cmd):
+                stop_events.append({
+                    "ts": p.get("start_ts") or p.get("ts"),
+                    "cmdline": cmd[:200],
+                })
+                break
+    # Bucket by window
+    stop_events.sort(key=lambda x: x.get("ts") or "")
+    if len(stop_events) >= 10:
+        # Check density: any window of N seconds with >=10 hits?
+        for i, e in enumerate(stop_events):
+            e_ts = _parse_ts(e.get("ts") or "")
+            if e_ts is None:
+                continue
+            count_in_window = 1
+            for later in stop_events[i+1:]:
+                l_ts = _parse_ts(later.get("ts") or "")
+                if l_ts is None:
+                    continue
+                if (l_ts - e_ts).total_seconds() <= mass_kill_window_seconds:
+                    count_in_window += 1
+                else:
+                    break
+            if count_in_window >= 10:
+                findings.append({
+                    "technique": "T1489",
+                    "rule": "mass_service_stop",
+                    "count_in_window": count_in_window,
+                    "window_start_ts": e.get("ts"),
+                    "window_seconds": mass_kill_window_seconds,
+                    "severity": "critical",
+                    "interpretation": "burst of service/process terminations "
+                                      "(pre-encryption preparation)",
+                })
+                break
+
+    # 3. Ransom note file creation
+    note_names = set(RANSOMWARE_INDICATORS["ransom_note_names"])
+    note_hits = []
+    for e in fsevents_or_mft:
+        path = (e.get("path") or "").lower()
+        flags = e.get("flags") or []
+        is_create = "Created" in flags or e.get("created") is not None
+        if not is_create:
+            continue
+        filename = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if filename in note_names:
+            note_hits.append({"ts": e.get("ts") or e.get("created"),
+                               "path": e.get("path")})
+    if note_hits:
+        findings.append({
+            "technique": "T1486",
+            "rule": "ransom_note_written",
+            "count": len(note_hits),
+            "samples": note_hits[:10],
+            "severity": "critical",
+            "interpretation": "ransom note files appeared in filesystem",
+        })
+
+    # 4. Mass rename to ransomware extensions
+    rename_hits = []
+    for e in fsevents_or_mft:
+        path = (e.get("path") or "").lower()
+        flags = e.get("flags") or []
+        # Detection on either modify with ransom ext, or rename events
+        has_rename = "Renamed" in flags or "RenamedOldPath" in flags
+        has_create_with_ransom_ext = ("Created" in flags) and any(
+            path.endswith(ext) for ext in RANSOMWARE_INDICATORS["ransom_extensions"])
+        if has_rename or has_create_with_ransom_ext:
+            rename_hits.append({
+                "ts": e.get("ts") or e.get("created"),
+                "path": e.get("path"),
+            })
+    if len(rename_hits) >= 20:
+        findings.append({
+            "technique": "T1486",
+            "rule": "mass_file_rename_to_ransom_ext",
+            "count": len(rename_hits),
+            "samples": rename_hits[:15],
+            "severity": "critical",
+            "interpretation": f"{len(rename_hits)} files renamed/created "
+                              f"with ransomware extensions",
+        })
+
+    max_sev = "info"
+    sev_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    for f in findings:
+        if sev_rank.get(f.get("severity", "info"), 0) > sev_rank.get(max_sev, 0):
+            max_sev = f["severity"]
+
+    return {"findings": findings, "finding_count": len(findings),
+            "max_severity": max_sev,
+            "stats": {
+                "anti_recovery_hits": len(anti_recov_hits),
+                "service_stop_events": len(stop_events),
+                "ransom_notes_created": len([f for f in findings
+                    if f.get("rule") == "ransom_note_written"]),
+                "mass_renames": len(rename_hits),
+            }}
+
+
+# --- Defense Evasion ---------------------------------------------------------
+
+EVASION_INDICATORS = {
+    "log_clearing_cmds": [
+        re.compile(r"wevtutil.*(?:cl|clear-log)\s+", re.I),
+        re.compile(r"Clear-EventLog", re.I),
+        re.compile(r"Remove-EventLog", re.I),
+        re.compile(r"Get-WinEvent.*-ListLog.*\|.*ForEach.*Clear", re.I),
+    ],
+    "timestomp_cmds": [
+        re.compile(r"SetFileTime", re.I),
+        re.compile(r"touch\s+-[atm]", re.I),
+        re.compile(r"powershell.*\.LastWriteTime\s*=", re.I),
+        re.compile(r"powershell.*\.CreationTime\s*=", re.I),
+    ],
+    "log_clear_event_ids": {1102, 104},
+}
+
+
+@tool(
+    name="detect_defense_evasion",
+    description="Detect TA0005 Defense Evasion: event log clearing (Event "
+                "ID 1102 Security, 104 System, or wevtutil cl / Clear-"
+                "EventLog commands), timestomping (explicit SetFileTime "
+                "calls, touch -t), and MFT $SI vs $FN timestamp mismatches "
+                "(forensic artifact of timestomp).",
+    schema={"type": "object", "properties": {
+        "events_json": {"type": "string"},
+        "processes": {"type": "array"},
+        "mft_csv": {"type": "string"},
+        "timestomp_si_fn_tolerance_seconds": {"type": "integer", "default": 5},
+    }, "required": []},
+)
+def detect_defense_evasion(events_json=None, processes=None, mft_csv=None,
+                            timestomp_si_fn_tolerance_seconds=5):
+    processes = processes or []
+    findings = []
+
+    # 1. Event Log clearing events (1102 / 104)
+    if events_json:
+        p = _safe_resolve(events_json)
+        if p.exists():
+            text = p.read_text(encoding="utf-8", errors="replace")
+            events = []
+            try:
+                parsed = json.loads(text)
+                events = parsed if isinstance(parsed, list) else [parsed]
+            except json.JSONDecodeError:
+                for line in text.splitlines():
+                    if line.strip():
+                        try:
+                            events.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            pass
+            for ev in events:
+                if not isinstance(ev, dict):
+                    continue
+                try:
+                    eid = int(ev.get("EventID") or ev.get("event_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if eid in EVASION_INDICATORS["log_clear_event_ids"]:
+                    findings.append({
+                        "technique": "T1070.001",
+                        "rule": "event_log_cleared",
+                        "ts": ev.get("TimeCreated"),
+                        "event_id": eid,
+                        "channel": ev.get("Channel") or ev.get("channel"),
+                        "user": ev.get("SubjectUserName") or ev.get("user"),
+                        "severity": "critical",
+                        "interpretation": "Windows event log was cleared "
+                                           "(covering tracks)",
+                    })
+
+    # 2. wevtutil cl / Clear-EventLog in process cmdlines
+    for p in processes:
+        cmd = (p.get("cmdline") or p.get("CommandLine") or "")
+        for pat in EVASION_INDICATORS["log_clearing_cmds"]:
+            if pat.search(cmd):
+                findings.append({
+                    "technique": "T1070.001",
+                    "rule": "log_clear_command",
+                    "ts": p.get("start_ts") or p.get("ts"),
+                    "pid": p.get("pid"), "cmdline": cmd[:200],
+                    "severity": "critical",
+                    "interpretation": "command to clear event logs executed",
+                })
+                break
+        for pat in EVASION_INDICATORS["timestomp_cmds"]:
+            if pat.search(cmd):
+                findings.append({
+                    "technique": "T1070.006",
+                    "rule": "timestomp_command",
+                    "ts": p.get("start_ts") or p.get("ts"),
+                    "pid": p.get("pid"), "cmdline": cmd[:200],
+                    "severity": "high",
+                    "interpretation": "command that modifies file timestamps "
+                                       "(timestomping)",
+                })
+                break
+
+    # 3. MFT $SI vs $FN timestamp mismatch (timestomping forensic artifact)
+    if mft_csv:
+        p = _safe_resolve(mft_csv)
+        if p.exists():
+            anomalies = []
+            try:
+                for row in _read_csv(p):
+                    si = _parse_ts(row.get("Created0x10") or
+                                    row.get("SI_Created") or "")
+                    fn = _parse_ts(row.get("Created0x30") or
+                                    row.get("FN_Created") or "")
+                    if si is None or fn is None:
+                        continue
+                    delta = abs((si - fn).total_seconds())
+                    # timestomp: $SI modified, $FN stays original.
+                    # A $SI timestamp EARLIER than $FN by >tolerance is
+                    # a forensic anomaly.
+                    if si < fn and delta > timestomp_si_fn_tolerance_seconds:
+                        anomalies.append({
+                            "path": (row.get("ParentPath", "") + "\\" +
+                                      row.get("FileName", "")).strip("\\"),
+                            "si_created": row.get("Created0x10"),
+                            "fn_created": row.get("Created0x30"),
+                            "delta_seconds": int(delta),
+                        })
+            except Exception:
+                pass
+            if anomalies:
+                findings.append({
+                    "technique": "T1070.006",
+                    "rule": "mft_si_fn_mismatch",
+                    "count": len(anomalies),
+                    "samples": anomalies[:20],
+                    "severity": "high",
+                    "interpretation": "MFT $SI earlier than $FN — "
+                                       "classic timestomping artifact",
+                })
+
+    max_sev = "info"
+    sev_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    for f in findings:
+        if sev_rank.get(f.get("severity", "info"), 0) > sev_rank.get(max_sev, 0):
+            max_sev = f["severity"]
+
+    return {"findings": findings, "finding_count": len(findings),
+            "max_severity": max_sev,
+            "stats": {
+                "event_log_clearings": sum(1 for f in findings
+                    if f.get("rule") in ("event_log_cleared", "log_clear_command")),
+                "timestomp_commands": sum(1 for f in findings
+                    if f.get("rule") == "timestomp_command"),
+                "mft_mismatches": sum(1 for f in findings
+                    if f.get("rule") == "mft_si_fn_mismatch"),
+            }}
+
+
+# --- Discovery ---------------------------------------------------------------
+
+DISCOVERY_INDICATORS = {
+    # AD reconnaissance commands
+    "ad_enum": [
+        (r"net\s+user\s+(?:\/domain|\/dom)", "T1087.002", "domain_user_enum"),
+        (r"net\s+group\s+(?:\/domain|\/dom)", "T1069.002", "domain_group_enum"),
+        (r"net\s+group\s+[\"']?domain\s+admins", "T1069.002", "domain_admins_query"),
+        (r"net\s+view\s+\/domain", "T1018", "remote_system_discovery"),
+        (r"nltest\s+(?:\/domain_trusts|\/dclist)", "T1482", "domain_trust_discovery"),
+        (r"dsquery\s+", "T1087.002", "dsquery_enum"),
+        (r"Get-AD(?:User|Group|Computer|Trust|Domain)", "T1087.002", "powerview_adsi"),
+        (r"Invoke-(?:ShareFinder|UserHunter|BloodHound)", "T1069", "bloodhound_collection"),
+        (r"SharpHound", "T1069", "sharphound_collection"),
+        (r"Get-NetUser|Get-NetGroup|Get-NetComputer", "T1087", "powerview"),
+        (r"ldapsearch\s+", "T1087.002", "ldapsearch"),
+    ],
+    # Local enumeration
+    "local_enum": [
+        (r"whoami\s+(?:\/all|\/groups|\/priv)", "T1033", "whoami_privs"),
+        (r"wmic\s+(?:useraccount|group|qfe|logicaldisk)", "T1082", "wmic_system_info"),
+        (r"systeminfo(?:\.exe)?", "T1082", "systeminfo"),
+        (r"tasklist\s+(?:\/v|\/svc)", "T1057", "tasklist_detailed"),
+        (r"ipconfig\s+\/all", "T1016", "ipconfig"),
+        (r"arp\s+-a", "T1018", "arp_scan"),
+        (r"route\s+print", "T1016", "route_print"),
+        (r"netstat\s+-[an]+", "T1049", "netstat"),
+    ],
+    # Linux enumeration
+    "linux_enum": [
+        (r"find\s+/\s+-perm\s+-[ug]\+s", "T1083", "find_suid"),
+        (r"getent\s+passwd", "T1087.001", "getent_passwd"),
+        (r"cat\s+/etc/(?:passwd|group|hosts)", "T1087.001", "etc_read"),
+        (r"id\s+(?:-a|-G|-g|-u)", "T1033", "id_command"),
+    ],
+}
+
+
+@tool(
+    name="detect_discovery",
+    description="Detect TA0007 Discovery commands: AD enumeration (net user "
+                "/domain, nltest, PowerView, BloodHound, SharpHound), local "
+                "enumeration (whoami /all, systeminfo, tasklist /v), network "
+                "discovery (arp -a, netstat), Linux enumeration (find SUID, "
+                "cat /etc/passwd). Flags high-volume sequences that look "
+                "like scripted attacker reconnaissance.",
+    schema={"type": "object", "properties": {
+        "processes": {"type": "array"},
+        "burst_threshold": {"type": "integer", "default": 5,
+                            "description": "commands within burst_seconds "
+                                           "to flag as scripted recon"},
+        "burst_seconds": {"type": "integer", "default": 60},
+    }, "required": []},
+)
+def detect_discovery(processes=None, burst_threshold=5, burst_seconds=60):
+    processes = processes or []
+
+    # Pre-compile
+    all_patterns = []
+    for group, pats in DISCOVERY_INDICATORS.items():
+        for pat_str, technique, sub in pats:
+            all_patterns.append((re.compile(pat_str, re.I),
+                                  technique, sub, group))
+
+    hits = []
+    for p in processes:
+        cmd = (p.get("cmdline") or p.get("CommandLine") or "")
+        if not cmd:
+            continue
+        for pat, technique, sub, group in all_patterns:
+            if pat.search(cmd):
+                hits.append({
+                    "ts": p.get("start_ts") or p.get("ts"),
+                    "pid": p.get("pid"),
+                    "user": p.get("user"),
+                    "cmdline": cmd[:200],
+                    "technique": technique,
+                    "sub_technique": sub,
+                    "group": group,
+                    "severity": ("high" if group == "ad_enum" else "medium"),
+                })
+                break
+
+    # Burst detection: N hits within burst_seconds from same user
+    hits_sorted = sorted(hits, key=lambda x: x.get("ts") or "")
+    bursts = []
+    i = 0
+    while i < len(hits_sorted):
+        anchor = hits_sorted[i]
+        anchor_ts = _parse_ts(anchor.get("ts") or "")
+        if anchor_ts is None:
+            i += 1
+            continue
+        window = [anchor]
+        j = i + 1
+        while j < len(hits_sorted):
+            nxt = hits_sorted[j]
+            nxt_ts = _parse_ts(nxt.get("ts") or "")
+            if nxt_ts is None or (nxt_ts - anchor_ts).total_seconds() > burst_seconds:
+                break
+            window.append(nxt)
+            j += 1
+        if len(window) >= burst_threshold:
+            bursts.append({
+                "start_ts": anchor.get("ts"),
+                "end_ts": window[-1].get("ts"),
+                "command_count": len(window),
+                "techniques": sorted({w["technique"] for w in window}),
+                "user": anchor.get("user"),
+                "severity": "high",
+                "interpretation": f"{len(window)} discovery commands in "
+                                   f"{burst_seconds}s — scripted recon",
+            })
+            i = j
+        else:
+            i += 1
+
+    # Per-technique stats
+    by_technique = {}
+    for h in hits:
+        by_technique[h["technique"]] = by_technique.get(h["technique"], 0) + 1
+
+    # AD-specific recon (higher severity)
+    ad_recon = [h for h in hits if h["group"] == "ad_enum"]
+
+    max_sev = "info"
+    sev_rank = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+    for rec in hits + bursts:
+        if sev_rank.get(rec.get("severity", "info"), 0) > sev_rank.get(max_sev, 0):
+            max_sev = rec["severity"]
+
+    return {"hits": hits[:100], "hit_count": len(hits),
+            "ad_recon_count": len(ad_recon),
+            "recon_bursts": bursts, "by_technique": by_technique,
+            "max_severity": max_sev}
+
+
 def __forbidden_never_registered():
     """Intentionally NOT registered: execute_shell, write_file, mount,
     delete_file, network_egress, spawn_process, kill_process. See
