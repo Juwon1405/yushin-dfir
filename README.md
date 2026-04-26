@@ -13,6 +13,18 @@
 
 ---
 
+## Development approach
+
+This project is developed by [Juwon Bang](https://github.com/Juwon1405) (LY Corporation DART team, DFIR Senior Specialist) with extensive use of [Claude](https://www.anthropic.com/claude) (Anthropic's AI assistant) as a coding collaborator.
+
+- **Human-driven**: architectural decisions, security model, threat coverage taxonomy, MITRE ATT&CK mapping, evidence-integrity invariants, and final code review.
+- **AI-accelerated**: implementation, sample-evidence generation, test scaffolding, documentation drafting.
+- **Validated**: every function is reviewed and exercised against the bundled sample evidence; the 17-test suite must pass on a clean clone before any commit lands on `main`.
+
+This disclosure follows the spirit of the [SANS FIND EVIL!](https://findevil.devpost.com/) ethos and modern open-source practice: AI-assisted development is a tool, not a substitute for engineering judgement.
+
+---
+
 
 ## What YuShin is (and what it is not)
 
