@@ -1,8 +1,16 @@
+<p align="center">
+  <img src="./agentic-dart-hero.png" alt="Agentic-DART — Autonomous DFIR Agent" width="100%">
+</p>
+
+<p align="center">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://www.python.org"><img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+"></a>
+  <a href="https://findevil.devpost.com/"><img src="https://img.shields.io/badge/SANS%20FIND%20EVIL%21-2026-dc2626.svg" alt="SANS FIND EVIL! 2026"></a>
+  <img src="https://img.shields.io/badge/MITRE%20ATT%26CK-11%2F12%20tactics-4F46E5.svg" alt="MITRE ATT&CK 11/12">
+  <img src="https://img.shields.io/badge/tests-17%2F17%20passing-22c55e.svg" alt="tests 17/17">
+</p>
+
 # Agentic-DART — Autonomous DFIR Agent on SANS SIFT Workstation
-
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
-
 
 > *An autonomous DFIR agent that thinks like a senior analyst.*
 > *Architecture-first, not prompt-first.*
@@ -101,6 +109,36 @@ Expected output:
 ```
 
 The demo walks the full senior-analyst loop against sample evidence, triggers a USB contradiction, **auto-self-corrects** by widening the time window, and writes a chain-verified audit log. The bypass test proves the `execute_shell` guardrail is architectural, not prompt-based.
+
+### What a real run looks like
+
+Below is a sample run on the SANS SIFT Workstation against a representative case. **Stage 1 — startup, MCP handshake, first hypothesis:**
+
+<p align="center">
+  <img src="./docs/screenshots/dart-run-01-init.png" alt="dart-agent startup and first hypothesis" width="92%">
+</p>
+
+**Stage 2 — typed tool calls, MITRE chain begins to form:**
+
+<p align="center">
+  <img src="./docs/screenshots/dart-run-02-investigate.png" alt="dart-agent calling typed forensic tools" width="92%">
+</p>
+
+**Stage 3 — contradiction detected, hypothesis refined automatically:**
+
+<p align="center">
+  <img src="./docs/screenshots/dart-run-03-contradiction.png" alt="dart-corr detecting an UNRESOLVED contradiction and the agent refining" width="92%">
+</p>
+
+This is the architecture-first claim made concrete: when artifacts disagree, `dart-corr` flags the contradiction as `UNRESOLVED` and the agent is forced to revise. No prompt instruction was needed — the contradiction surfaces from the data itself.
+
+**Stage 4 — final verdict, MITRE ATT&CK chain verified, audit chain integrity confirmed:**
+
+<p align="center">
+  <img src="./docs/screenshots/dart-run-04-final.png" alt="dart-agent final verdict with verified audit chain" width="92%">
+</p>
+
+> *Sample run output — representative of an actual SIFT Workstation execution. A live screencast will replace these stills in the final hackathon submission video (June 2026).*
 
 ## Running the tests
 
