@@ -1,11 +1,11 @@
-"""MCP stdio server entrypoint for yushin-mcp.
+"""MCP stdio server entrypoint for agentic-dart-mcp.
 
 Run with:
-    python3 -m yushin_mcp.server_stdio
+    python3 -m agentic_dart_mcp.server_stdio
 
 This wraps the internal function registry (_REGISTRY) in the standard
 MCP protocol so external agents — Claude Code, Claude Desktop, our own
-yushin_agent --mode live — can discover and call forensic tools over
+agentic_dart_agent --mode live — can discover and call forensic tools over
 stdio JSON-RPC without knowing anything about Python internals.
 
 Design note: the MCP protocol itself is the attack surface. Any function
@@ -26,7 +26,7 @@ from . import _REGISTRY, call_tool, list_tools
 
 
 # MCP Server instance. Name is what shows up to clients.
-app = Server("yushin-mcp")
+app = Server("agentic-dart-mcp")
 
 
 @app.list_tools()

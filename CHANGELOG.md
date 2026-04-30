@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to YuShin are recorded here.
+All notable changes to Agentic-DART are recorded here.
 
 ## [Unreleased] — 2026-04-20
 
@@ -15,7 +15,7 @@ All notable changes to YuShin are recorded here.
 - `duckdb_timeline_correlate`: **real DuckDB cross-source timeline join at scale** — accepts N named sources, joins on time proximity
 
 ### Added — Live mode infrastructure
-- `yushin_mcp.server`: **JSON-RPC 2.0 MCP stdio server** — launchable from Claude Code via `claude mcp add yushin python3 -m yushin_mcp.server`. The server exposes exactly the 13 registered tools and refuses anything else (verified by two adversarial tests in `test_extended_mcp.py`).
+- `agentic_dart_mcp.server`: **JSON-RPC 2.0 MCP stdio server** — launchable from Claude Code via `claude mcp add agentic-dart python3 -m agentic_dart_mcp.server`. The server exposes exactly the 13 registered tools and refuses anything else (verified by two adversarial tests in `test_extended_mcp.py`).
 
 ### Added — Evidence fixtures
 - `examples/sample-evidence/logs/security_sample.evtx.csv` (6 events: 4624 logon, 4688 process create, 4698 scheduled task, 4663 file access)
@@ -38,7 +38,7 @@ All notable changes to YuShin are recorded here.
 ### Added
 - Real implementations for `extract_mft_timeline`, `parse_prefetch`,
   `list_scheduled_tasks`, and `correlate_events`. No more scaffolds.
-- `yushin-audit` CLI with `verify`, `lookup`, `trace`, `summary`
+- `agentic-dart-audit` CLI with `verify`, `lookup`, `trace`, `summary`
   subcommands. Enables the "3 clicks from finding to raw evidence"
   claim to be executed, not just asserted.
 - `scripts/measure_accuracy.py` — deterministic accuracy measurement
@@ -55,7 +55,7 @@ All notable changes to YuShin are recorded here.
 - `.github/workflows/ci.yml` — CI across Python 3.10–3.12.
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`.
 - Agent audit entries now carry `finding_ids`, which is what
-  `yushin-audit trace <finding_id>` relies on.
+  `agentic-dart-audit trace <finding_id>` relies on.
 
 ### Changed
 - `docs/accuracy-report.md` rewritten to show REAL measured numbers

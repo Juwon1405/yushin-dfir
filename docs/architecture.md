@@ -1,4 +1,4 @@
-# YuShin Architecture
+# Agentic-DART Architecture
 
 ## Thesis
 
@@ -6,23 +6,23 @@ Protocol SIFT works. It also hallucinates more than a DFIR practitioner can stan
 
 ## System overview
 
-See [`../yushin-architecture.png`](../yushin-architecture.png).
+See [`../agentic-dart-architecture.png`](../agentic-dart-architecture.png).
 
 The stack is a deliberate hybrid of three of the four supported FIND EVIL! architectural patterns:
 
-1. **Custom MCP Server (primary enforcement layer)** — `yushin-mcp`
-2. **Direct Agent Extension on Claude Code** — `yushin-agent`
+1. **Custom MCP Server (primary enforcement layer)** — `agentic-dart-mcp`
+2. **Direct Agent Extension on Claude Code** — `agentic-dart-agent`
 3. **Persistent Learning Loop** — iteration controller + `progress.jsonl`
 
 The fourth pattern (Multi-Agent Framework) is reserved for the post-submission roadmap.
 
 ## Components
 
-### `yushin-agent` — Claude Code wrapper
+### `agentic-dart-agent` — Claude Code wrapper
 
 Responsible for:
 
-- Loading the senior-analyst system prompt from `yushin_playbook/`
+- Loading the senior-analyst system prompt from `agentic_dart_playbook/`
 - Maintaining the hypothesis tracker (writes to `progress.jsonl`)
 - Running the iteration controller with `--max-iterations` hard cap
 - Routing all forensic work through the MCP server — never through shell
@@ -31,7 +31,7 @@ Not responsible for:
 
 - Security boundaries (those live in the MCP server + OS mount)
 
-### `yushin-mcp` — Custom MCP Server
+### `agentic-dart-mcp` — Custom MCP Server
 
 The enforcement layer. Exposes **typed, schema-validated functions only**. Examples:
 
@@ -53,7 +53,7 @@ Functions that **are not exposed** (and therefore cannot be called):
 
 The server pre-parses tool output (which can be gigabytes) and returns cursor-paginated JSON so the LLM context is never flooded.
 
-### `yushin-corr` — Cross-artifact correlation engine
+### `agentic-dart-corr` — Cross-artifact correlation engine
 
 Python + DuckDB. Performs timeline joins across:
 
@@ -63,7 +63,7 @@ Python + DuckDB. Performs timeline joins across:
 
 When two sources contradict, the contradiction is flagged as **UNRESOLVED** and written to `progress.jsonl`. The agent is architecturally forbidden from smoothing over contradictions in its report.
 
-### `yushin-audit` — JSONL logger
+### `agentic-dart-audit` — JSONL logger
 
 Side-tapped from every MCP call. Each entry:
 
@@ -83,9 +83,9 @@ Side-tapped from every MCP call. Each entry:
 
 Every finding in the final report carries an `audit_id`. Judges can trace any claim back to the exact tool call in ≤3 clicks.
 
-### `yushin-playbook` — YAML sequencing rules
+### `agentic-dart-playbook` — YAML sequencing rules
 
-The senior-analyst playbook, expressed as YAML so other responders can contribute without touching Python. See [`../yushin_playbook/senior-analyst-v1.yaml`](../yushin_playbook/senior-analyst-v1.yaml).
+The senior-analyst playbook, expressed as YAML so other responders can contribute without touching Python. See [`../agentic_dart_playbook/senior-analyst-v1.yaml`](../agentic_dart_playbook/senior-analyst-v1.yaml).
 
 ## Evidence integrity — by architecture
 
@@ -107,7 +107,7 @@ This is the architectural property that lets a practitioner stand behind the age
 | Evidence mounted `ro,noload` | OS kernel | None — kernel enforces |
 | SHA-256 pre/post verification | Separate verifier | Detects any deviation |
 
-YuShin uses the bottom three, not the top two.
+Agentic-DART uses the bottom three, not the top two.
 
 ## Trust boundaries (for judges)
 

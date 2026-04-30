@@ -1,9 +1,9 @@
-# YuShin — Senior Analyst Playbook v1
+# Agentic-DART — Senior Analyst Playbook v1
 # Target: insider-threat and DPRK IT-worker-style patterns
 
 version: 1
 name: senior-analyst-v1
-author: YuShin (Bang Juwon)
+author: Agentic-DART (Bang Juwon)
 target_case_class:
   - insider_threat_unauthorized_access
   - remote_hands_ip_kvm

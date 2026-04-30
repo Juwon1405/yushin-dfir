@@ -6,11 +6,11 @@
 
 - Confirm outbound HTTPS to `raw.githubusercontent.com` and `github.com`
 - Re-run with verbose output: `curl -fsSL <url> | bash -x`
-- Alternative: `git clone https://github.com/Juwon1405/yushin-dfir.git && cd yushin-dfir && bash scripts/install.sh`
+- Alternative: `git clone https://github.com/Juwon1405/agentic-dart.git && cd agentic-dart && bash scripts/install.sh`
 
 ### Python version mismatch
 
-YuShin targets Python 3.11+. Check:
+Agentic-DART targets Python 3.11+. Check:
 
 ```bash
 python3 --version
@@ -20,7 +20,7 @@ If the SIFT Workstation default is older, use pyenv or a system-level install.
 
 ### `ANTHROPIC_API_KEY` not set
 
-`yushin-agent` talks to Claude through Claude Code, which reads this environment variable:
+`agentic-dart-agent` talks to Claude through Claude Code, which reads this environment variable:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
@@ -30,7 +30,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 ### `ToolNotFound: execute_shell` (or similar)
 
-This is **by design**. YuShin does not expose `execute_shell`. Destructive or unconstrained functions are not part of the MCP surface. If the agent attempts to call one, the call fails. This is one of the system's architectural guardrails — not a bug.
+This is **by design**. Agentic-DART does not expose `execute_shell`. Destructive or unconstrained functions are not part of the MCP surface. If the agent attempts to call one, the call fails. This is one of the system's architectural guardrails — not a bug.
 
 ### Agent hits `--max-iterations` cap
 
@@ -45,7 +45,7 @@ This is also by design. Runaway execution is worse than a bounded early exit.
 
 ### Context-window exhaustion
 
-`yushin-mcp` pre-parses tool output and returns cursor-paginated JSON. If context exhaustion still occurs:
+`agentic-dart-mcp` pre-parses tool output and returns cursor-paginated JSON. If context exhaustion still occurs:
 
 - Reduce `--max-iterations`
 - Narrow the time window on `extract_mft_timeline`
@@ -57,17 +57,17 @@ This is also by design. Runaway execution is worse than a bounded early exit.
 claude mcp list
 ```
 
-If `yushin-mcp` is not listed, re-run the registration step:
+If `agentic-dart-mcp` is not listed, re-run the registration step:
 
 ```bash
-claude mcp add yushin-mcp --transport stdio --command yushin-mcp-server
+claude mcp add agentic-dart-mcp --transport stdio --command agentic-dart-mcp-server
 ```
 
 ## Evidence
 
 ### SHA-256 mismatch at finalization
 
-This indicates evidence was modified during the run. YuShin aborts the report. Check:
+This indicates evidence was modified during the run. Agentic-DART aborts the report. Check:
 
 - Was the evidence path mounted `ro,noload`?  `mount | grep evidence`
 - Did another process on the workstation touch the mount?
@@ -81,7 +81,7 @@ Check ownership and mode on the mount. `ro,noload` prevents writes, not reads. I
 
 ## Reporting issues
 
-Open an issue at https://github.com/Juwon1405/yushin-dfir/issues with:
+Open an issue at https://github.com/Juwon1405/agentic-dart/issues with:
 
 - `audit.jsonl` excerpt (last 20 entries)
 - `progress.jsonl` (full file)

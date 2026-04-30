@@ -3,9 +3,9 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "yushin-audit"
+name = "agentic-dart-audit"
 version = "0.1.0"
-description = "YuShin — tamper-evident JSONL audit logger"
+description = "Agentic-DART — tamper-evident JSONL audit logger"
 requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]

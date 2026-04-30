@@ -1,4 +1,4 @@
-# yushin-playbook
+# agentic-dart-playbook
 
 Senior-analyst sequencing rules, expressed as YAML. Community-extensible.
 

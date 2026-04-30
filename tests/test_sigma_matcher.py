@@ -1,13 +1,13 @@
-"""Tests for yushin-mcp.match_sigma_rules — the 7th MCP function."""
+"""Tests for agentic-dart-mcp.match_sigma_rules — the 7th MCP function."""
 import os
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "yushin_mcp" / "src"))
-os.environ["YUSHIN_EVIDENCE_ROOT"] = str(REPO / "examples" / "sample-evidence")
+sys.path.insert(0, str(REPO / "agentic_dart_mcp" / "src"))
+os.environ["AGENTIC_DART_EVIDENCE_ROOT"] = str(REPO / "examples" / "sample-evidence")
 
-from yushin_mcp import call_tool
+from agentic_dart_mcp import call_tool
 
 
 def test_sigma_matcher_catches_ip_kvm():

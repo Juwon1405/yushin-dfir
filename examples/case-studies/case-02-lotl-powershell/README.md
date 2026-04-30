@@ -17,7 +17,7 @@ The diagnostic is in the **process tree shape and command-line content**:
 - Encoded PowerShell (`-enc`) is rare in legitimate use
 - `IEX (New-Object Net.WebClient).DownloadString(...)` = download-and-exec
 
-## How YuShin walks this case
+## How Agentic-DART walks this case
 
 ### Iteration 1 — Process tree reconstruction
 
@@ -59,7 +59,7 @@ Combined, these are high-confidence LOTL indicators.
 ### Result
 
 Attack narrative assembled from 4 different evidence sources, all linked
-by `yushin-audit trace`:
+by `agentic-dart-audit trace`:
 
 ```
 IP-KVM inserted (Case 01)
@@ -75,14 +75,14 @@ IP-KVM inserted (Case 01)
 
 ```bash
 # Test each new function on its own
-python3 -c "from yushin_mcp import call_tool; import json; \
+python3 -c "from agentic_dart_mcp import call_tool; import json; \
   print(json.dumps(call_tool('get_process_tree', {'process_csv': 'disk/processes.csv'})['flags'], indent=2))"
 
-python3 -c "from yushin_mcp import call_tool; import json; \
+python3 -c "from agentic_dart_mcp import call_tool; import json; \
   r = call_tool('analyze_event_logs', {'events_json': 'disk/events.json'}); \
   print(json.dumps(r['alerts_by_severity'], indent=2))"
 
-python3 -c "from yushin_mcp import call_tool; import json; \
+python3 -c "from agentic_dart_mcp import call_tool; import json; \
   r = call_tool('detect_persistence', {}); \
   print(json.dumps(r['by_mechanism'], indent=2))"
 ```

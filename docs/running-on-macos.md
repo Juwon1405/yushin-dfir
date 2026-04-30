@@ -1,7 +1,7 @@
-# Running YuShin on macOS
+# Running Agentic-DART on macOS
 
-YuShin is a pure Python 3.10+ project. The SANS SIFT Workstation is the
-reference deployment target, but YuShin **runs identically on macOS** — no
+Agentic-DART is a pure Python 3.10+ project. The SANS SIFT Workstation is the
+reference deployment target, but Agentic-DART **runs identically on macOS** — no
 Linux-specific dependencies, no Docker required.
 
 ## 5-minute quickstart
@@ -14,8 +14,8 @@ python3 --version    # 3.10.x, 3.11.x, 3.12.x all work
 # brew install python@3.12
 
 # 2. Clone
-git clone https://github.com/Juwon1405/yushin-dfir.git
-cd yushin-dfir
+git clone https://github.com/Juwon1405/agentic-dart.git
+cd agentic-dart
 
 # 3. Install DuckDB (required by correlate_timeline)
 pip3 install duckdb
@@ -25,23 +25,23 @@ pip3 install duckdb --break-system-packages
 # python3 -m venv .venv && source .venv/bin/activate && pip install duckdb
 
 # 4. Run the bundled demo
-export YUSHIN_EVIDENCE_ROOT="$PWD/examples/sample-evidence"
-export PYTHONPATH="$PWD/yushin_audit/src:$PWD/yushin_mcp/src:$PWD/yushin_agent/src"
+export AGENTIC_DART_EVIDENCE_ROOT="$PWD/examples/sample-evidence"
+export PYTHONPATH="$PWD/agentic_dart_audit/src:$PWD/agentic_dart_mcp/src:$PWD/agentic_dart_agent/src"
 bash examples/demo-run.sh
 ```
 
 Expected output (identical on Linux and macOS):
 
 ```
-[yushin-agent] iterations: 5
-[yushin-agent] findings: 2
-[yushin-agent] audit chain: chain verified: 3 entries
-[demo] PASS — "ToolNotFound: 'execute_shell' is not exposed by yushin-mcp"
+[agentic-dart-agent] iterations: 5
+[agentic-dart-agent] findings: 2
+[agentic-dart-agent] audit chain: chain verified: 3 entries
+[demo] PASS — "ToolNotFound: 'execute_shell' is not exposed by agentic-dart-mcp"
 ```
 
-## Analyzing a real macOS system with YuShin
+## Analyzing a real macOS system with Agentic-DART
 
-YuShin has three MCP functions specifically for macOS artifacts:
+Agentic-DART has three MCP functions specifically for macOS artifacts:
 
 | Function | Source | How to produce input |
 |---|---|---|
@@ -57,14 +57,14 @@ mkdir -p /tmp/triage-evidence/mac/private/var/db/diagnostics
 log show --style ndjson --last 24h \
   > /tmp/triage-evidence/mac/private/var/db/diagnostics/unifiedlog.ndjson
 
-# 2. Point YuShin at it
-export YUSHIN_EVIDENCE_ROOT=/tmp/triage-evidence
-cd ~/yushin-dfir
-export PYTHONPATH="$PWD/yushin_audit/src:$PWD/yushin_mcp/src:$PWD/yushin_agent/src"
+# 2. Point Agentic-DART at it
+export AGENTIC_DART_EVIDENCE_ROOT=/tmp/triage-evidence
+cd ~/agentic-dart
+export PYTHONPATH="$PWD/agentic_dart_audit/src:$PWD/agentic_dart_mcp/src:$PWD/agentic_dart_agent/src"
 
 # 3. Run just the macOS function
 python3 -c "
-from yushin_mcp import call_tool
+from agentic_dart_mcp import call_tool
 import json
 r = call_tool('parse_unified_log',
               {'unifiedlog_json': 'mac/private/var/db/diagnostics/unifiedlog.ndjson'})
@@ -82,9 +82,9 @@ for a in r['alerts'][:10]:
 Two options:
 
 1. **Run as root / with `sudo`** for the `log show` export step only
-   (not for YuShin itself — YuShin should never run as root).
+   (not for Agentic-DART itself — Agentic-DART should never run as root).
 2. **Analyze offline** — copy the evidence to a user-writable directory
-   before invoking YuShin.
+   before invoking Agentic-DART.
 
 ### KnowledgeC.db is locked while `cfprefsd` holds it open
 
@@ -108,9 +108,9 @@ If you want to analyze your own live KnowledgeC, either:
 
 `/.fseventsd/*.gz` files are in a proprietary binary format. Use
 [FSEventsParser](https://github.com/dlcowen/FSEventsParser) to produce a
-CSV that YuShin's `parse_fsevents` consumes.
+CSV that Agentic-DART's `parse_fsevents` consumes.
 
-## Developing YuShin on macOS
+## Developing Agentic-DART on macOS
 
 Everything works the same as Linux:
 
@@ -125,8 +125,8 @@ python3 tests/test_agent_self_correction.py
 python3 scripts/measure_accuracy.py
 
 # Inspect audit chain
-python3 -m yushin_audit verify examples/out/find-evil-ref-01/audit.jsonl
-python3 -m yushin_audit trace  examples/out/find-evil-ref-01/audit.jsonl F-013
+python3 -m agentic_dart_audit verify examples/out/find-evil-ref-01/audit.jsonl
+python3 -m agentic_dart_audit trace  examples/out/find-evil-ref-01/audit.jsonl F-013
 ```
 
 ## Known differences vs. SIFT/Linux
@@ -139,5 +139,5 @@ python3 -m yushin_audit trace  examples/out/find-evil-ref-01/audit.jsonl F-013
 | Native tool integration | MFTECmd via `mono` | Skip — use sidecar CSV approach |
 | macOS artifact analysis | Only with exported input | Can capture live with `log show` |
 
-YuShin is, architecturally, just a Python library. It runs anywhere Python 3.10+
+Agentic-DART is, architecturally, just a Python library. It runs anywhere Python 3.10+
 does.

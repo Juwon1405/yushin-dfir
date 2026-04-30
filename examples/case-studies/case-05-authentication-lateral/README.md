@@ -159,7 +159,7 @@ critical_transitions:
 
 ## What makes this important
 
-Before this case study, YuShin could tell you malware ran. It could not
+Before this case study, Agentic-DART could tell you malware ran. It could not
 answer: **"Did this come from a console user, a stolen SSH key, a
 Kerberoast, or an RDP session from a suspicious IP?"** Now it can, across
 Windows (AD), Linux (auth.log), and macOS.

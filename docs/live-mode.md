@@ -1,6 +1,6 @@
-# Live Mode — Claude API + yushin-mcp over stdio
+# Live Mode — Claude API + agentic-dart-mcp over stdio
 
-YuShin runs in two modes:
+Agentic-DART runs in two modes:
 
 | Mode | Claude? | Network? | Purpose |
 |---|---|---|---|
@@ -13,7 +13,7 @@ YuShin runs in two modes:
 
 ```
 ┌────────────────────────┐                  ┌──────────────────────────┐
-│   yushin_agent         │  MCP over stdio  │ yushin_mcp.server_stdio  │
+│   agentic_dart_agent         │  MCP over stdio  │ agentic_dart_mcp.server_stdio  │
 │   (Anthropic API       │ ◄───────────────►│ (subprocess; 15 typed    │
 │    tool-use loop)      │  JSON-RPC        │  forensic functions)     │
 └──────────┬─────────────┘                  └────────────┬─────────────┘
@@ -25,7 +25,7 @@ YuShin runs in two modes:
 
 The agent:
 
-1. Spawns `python -m yushin_mcp.server_stdio` as a subprocess
+1. Spawns `python -m agentic_dart_mcp.server_stdio` as a subprocess
 2. Completes the MCP initialize handshake
 3. Calls `list_tools()` — sees exactly the 15 registered forensic functions
 4. Hands that tool list (converted to Anthropic's tool-use schema) to Claude
@@ -41,10 +41,10 @@ it not to — because the MCP server does not expose anything else.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-export YUSHIN_EVIDENCE_ROOT=/path/to/evidence
-export PYTHONPATH="$PWD/yushin_audit/src:$PWD/yushin_mcp/src:$PWD/yushin_agent/src"
+export AGENTIC_DART_EVIDENCE_ROOT=/path/to/evidence
+export PYTHONPATH="$PWD/agentic_dart_audit/src:$PWD/agentic_dart_mcp/src:$PWD/agentic_dart_agent/src"
 
-python3 -m yushin_agent --mode live \
+python3 -m agentic_dart_agent --mode live \
     --case my-case \
     --out /tmp/my-case-out \
     --prompt "Investigate evidence root for IP-KVM insider pattern. Report findings with audit IDs." \
@@ -63,7 +63,7 @@ mock that walks a plausible tool-call sequence. Useful for:
 - Running the same plumbing Claude will use in a deterministic test
 
 ```bash
-python3 -m yushin_agent --mode live --case test --out /tmp/out --dry-run
+python3 -m agentic_dart_agent --mode live --case test --out /tmp/out --dry-run
 ```
 
 ## Outputs
@@ -99,7 +99,7 @@ update that changes the alignment, and the LLM can do anything.
 ### ✅ Design B: "give the LLM a typed, read-only function set"
 
 ```python
-# yushin-mcp registers ONLY this interface
+# agentic-dart-mcp registers ONLY this interface
 @tool(name="extract_mft_timeline", schema=...)
 def extract_mft_timeline(mft_path, start, end): ...
 ```

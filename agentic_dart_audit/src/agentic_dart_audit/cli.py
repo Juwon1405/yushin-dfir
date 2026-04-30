@@ -1,10 +1,10 @@
-"""yushin-audit CLI — operations on JSONL audit logs.
+"""agentic-dart-audit CLI — operations on JSONL audit logs.
 
 Usage:
-  python -m yushin_audit verify  <audit.jsonl>
-  python -m yushin_audit lookup  <audit.jsonl> <audit_id>
-  python -m yushin_audit trace   <audit.jsonl> <finding_id>
-  python -m yushin_audit summary <audit.jsonl>
+  python -m agentic_dart_audit verify  <audit.jsonl>
+  python -m agentic_dart_audit lookup  <audit.jsonl> <audit_id>
+  python -m agentic_dart_audit trace   <audit.jsonl> <finding_id>
+  python -m agentic_dart_audit summary <audit.jsonl>
 
 'lookup' returns the full entry for a single audit_id.
 'trace' walks the chain and emits every entry that produced the given

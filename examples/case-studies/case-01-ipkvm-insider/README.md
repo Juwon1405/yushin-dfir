@@ -15,9 +15,9 @@ legitimate user's activity in application-layer logs alone.
 
 The diagnostic is in the **timeline**: the IP-KVM's USB insertion
 signature arrives seconds to minutes BEFORE the operator logon it
-enabled. That temporal ordering is what YuShin looks for.
+enabled. That temporal ordering is what Agentic-DART looks for.
 
-## How YuShin walks the case
+## How Agentic-DART walks the case
 
 ### Iteration 1 — Timeline reconstruction
 
@@ -25,7 +25,7 @@ The agent calls `get_amcache()` and surfaces an unusual binary first-
 executed shortly after the reported logon.
 
 - Finding F-001 recorded with confidence 0.55
-- One audit entry chained (audit_id resolves via `yushin-audit trace F-001`)
+- One audit entry chained (audit_id resolves via `agentic-dart-audit trace F-001`)
 
 ### Iteration 2 — Hypothesis formation
 
@@ -67,15 +67,15 @@ A second audit entry is chained, also tagged with F-013.
 
 ### Iteration 5 — Finalization
 
-The structured report is emitted. `yushin-audit verify` confirms the
-chain is intact. `yushin-audit trace F-013` resolves in ≤3 clicks to
+The structured report is emitted. `agentic-dart-audit verify` confirms the
+chain is intact. `agentic-dart-audit trace F-013` resolves in ≤3 clicks to
 the two underlying `analyze_usb_history` calls.
 
 ## What makes this diagnostically useful
 
 The same Amcache finding (F-001) in isolation would support either
 hypothesis. The USB timeline is the **falsifying evidence** that only
-fits one. This is why YuShin structures the loop around cross-source
+fits one. This is why Agentic-DART structures the loop around cross-source
 validation — not because it produces prettier reports, but because it
 refuses to conclude on confirmation-only evidence.
 
@@ -89,11 +89,11 @@ bash examples/demo-run.sh
 python3 scripts/measure_accuracy.py
 
 # Audit chain integrity
-python3 -m yushin_audit verify examples/out/find-evil-ref-01/audit.jsonl
+python3 -m agentic_dart_audit verify examples/out/find-evil-ref-01/audit.jsonl
 
 # Trace from finding to raw evidence (the "3 clicks" claim)
-python3 -m yushin_audit trace examples/out/find-evil-ref-01/audit.jsonl F-013
-python3 -m yushin_audit trace examples/out/find-evil-ref-01/audit.jsonl F-001
+python3 -m agentic_dart_audit trace examples/out/find-evil-ref-01/audit.jsonl F-013
+python3 -m agentic_dart_audit trace examples/out/find-evil-ref-01/audit.jsonl F-001
 
 # Bypass tests — architectural guardrails
 python3 tests/test_mcp_bypass.py

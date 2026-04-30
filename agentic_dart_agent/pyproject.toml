@@ -3,16 +3,18 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "yushin-mcp"
+name = "agentic-dart-agent"
 version = "0.2.0"
-description = "YuShin typed, read-only forensic MCP server (15 functions)"
+description = "Agentic-DART autonomous DFIR agent (deterministic + live modes)"
 requires-python = ">=3.10"
 dependencies = [
-    "duckdb>=1.0.0",
+    "agentic-dart-audit",
+    "agentic-dart-mcp",
 ]
 
 [project.optional-dependencies]
-stdio = [
+live = [
+    "anthropic>=0.40.0",
     "mcp>=1.0.0",
 ]
 

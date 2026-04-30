@@ -15,7 +15,7 @@ phishing email → browser opens URL → file downloads → user runs it
     → malware calls home → sensitive data compressed → uploaded
 ```
 
-Earlier YuShin case studies proved **execution** and **persistence**
+Earlier Agentic-DART case studies proved **execution** and **persistence**
 detection (Case 01, 02) and **macOS system coverage** (Case 03). This
 case closes the two largest remaining gaps: **how the malware got in**
 and **whether data left**.
@@ -29,7 +29,7 @@ redirected to `https://203.0.113.42:8080/payload` which served
 payload then compressed local files and uploaded them to `bashupload.com`
 and `transfer.sh`.
 
-## YuShin walkthrough
+## Agentic-DART walkthrough
 
 ### Iteration 1 — Browser history
 
@@ -132,7 +132,7 @@ stats:
 ```bash
 # Each function end-to-end against bundled evidence
 python3 -c "
-from yushin_mcp import call_tool
+from agentic_dart_mcp import call_tool
 import json
 
 hist = call_tool('parse_browser_history', {

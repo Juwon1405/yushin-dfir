@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure YuShin's accuracy against the sample-evidence ground truth.
+"""Measure Agentic-DART's accuracy against the sample-evidence ground truth.
 
 This script is deterministic: same evidence in → same numbers out. The
 output is committed to docs/accuracy-report.md so any reviewer can
@@ -25,10 +25,10 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-os.environ["YUSHIN_EVIDENCE_ROOT"] = str(REPO / "examples" / "sample-evidence")
-sys.path.insert(0, str(REPO / "yushin_audit" / "src"))
-sys.path.insert(0, str(REPO / "yushin_mcp"   / "src"))
-sys.path.insert(0, str(REPO / "yushin_agent" / "src"))
+os.environ["AGENTIC_DART_EVIDENCE_ROOT"] = str(REPO / "examples" / "sample-evidence")
+sys.path.insert(0, str(REPO / "agentic_dart_audit" / "src"))
+sys.path.insert(0, str(REPO / "agentic_dart_mcp"   / "src"))
+sys.path.insert(0, str(REPO / "agentic_dart_agent" / "src"))
 
 GROUND_TRUTH = {"F-001", "F-013"}
 
@@ -46,13 +46,13 @@ def evidence_sha256_map(root):
 
 
 def main():
-    evidence_root = Path(os.environ["YUSHIN_EVIDENCE_ROOT"])
+    evidence_root = Path(os.environ["AGENTIC_DART_EVIDENCE_ROOT"])
 
     # 1. Snapshot evidence hashes BEFORE the run
     pre = evidence_sha256_map(evidence_root)
 
     # 2. Run the agent
-    from yushin_agent import main as agent_main
+    from agentic_dart_agent import main as agent_main
     with tempfile.TemporaryDirectory() as td:
         rc = agent_main(["--case", "accuracy-measurement",
                          "--out", td, "--mode", "deterministic"])

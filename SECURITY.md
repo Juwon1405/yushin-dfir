@@ -2,7 +2,7 @@
 
 ## Reporting vulnerabilities
 
-If you believe you've found a way to bypass YuShin's architectural
+If you believe you've found a way to bypass Agentic-DART's architectural
 guardrails — particularly the read-only MCP surface or the SHA-256
 audit chain — please open a private advisory on GitHub rather than a
 public issue.
@@ -10,7 +10,7 @@ public issue.
 Specifically in scope:
 
 - Any function that escapes `_safe_resolve` and reads outside `EVIDENCE_ROOT`
-- Any tampering of `audit.jsonl` that is NOT caught by `yushin-audit verify`
+- Any tampering of `audit.jsonl` that is NOT caught by `agentic-dart-audit verify`
 - Any agent-reachable path to a destructive operation
 
 Out of scope:

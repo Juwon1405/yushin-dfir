@@ -1,5 +1,5 @@
 """
-yushin-audit — Append-only JSONL logger with SHA-256 hash chain.
+agentic-dart-audit — Append-only JSONL logger with SHA-256 hash chain.
 
 Every MCP call is recorded as one line. Each line contains the SHA-256
 of the previous line, forming a tamper-evident chain. The agent cannot

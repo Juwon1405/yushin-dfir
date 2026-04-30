@@ -4,7 +4,7 @@ All numbers in this document are produced by `scripts/measure_accuracy.py`
 against bundled sample evidence. Reproducible by any reviewer:
 
 ```bash
-export PYTHONPATH="$PWD/yushin_audit/src:$PWD/yushin_mcp/src:$PWD/yushin_agent/src"
+export PYTHONPATH="$PWD/agentic_dart_audit/src:$PWD/agentic_dart_mcp/src:$PWD/agentic_dart_agent/src"
 python3 scripts/measure_accuracy.py
 ```
 
@@ -94,9 +94,9 @@ python3 scripts/measure_accuracy.py
 
 1. **Eric Zimmerman tools (MFTECmd, PECmd, AppCompatCacheParser)** are
    consumed via sidecar CSV/JSON. Direct binary parsing requires .NET
-   runtime. Sidecar-first design keeps YuShin portable.
-2. **FSEventsParser and `log show`** are external to YuShin — they produce
-   the input YuShin consumes. This is analogous to the Windows sidecar model.
+   runtime. Sidecar-first design keeps Agentic-DART portable.
+2. **FSEventsParser and `log show`** are external to Agentic-DART — they produce
+   the input Agentic-DART consumes. This is analogous to the Windows sidecar model.
 3. **Volatility memory forensics** is out of scope for MVP. Post-hackathon.
 4. **Event log / UnifiedLog rule packs are deliberately small** (5 rules
    each). Designed to demonstrate the detection surface, not replace
@@ -134,7 +134,7 @@ which earlier case studies did not address.
 | `correlate_download_to_execution` | 1 critical chain: URL → file → execution in 390s |
 | `detect_exfiltration` | 5 signals, max_severity=critical, 4 archive→upload chains |
 
-## Coverage map (what YuShin can actually see)
+## Coverage map (what Agentic-DART can actually see)
 
 ```
         [infection vector]  [foothold]    [action on objectives]
@@ -205,7 +205,7 @@ classification (credential stuffing vs password spray vs single-account).
 ## Initial-access vector coverage (complete)
 
 ```
-Path                            YuShin function
+Path                            Agentic-DART function
 ───────────────────────────     ──────────────────────────────
 Phishing email                  parse_browser_history + analyze_downloads
 Web application attack          analyze_web_access_log  + detect_webshell
@@ -231,9 +231,9 @@ evasion, ransomware deployment. Based on DFIR Report 2025, Red Canary
 
 ## MITRE ATT&CK coverage summary (final)
 
-YuShin now covers these TA0001–TA0040 tactics:
+Agentic-DART now covers these TA0001–TA0040 tactics:
 
-| Tactic | YuShin coverage |
+| Tactic | Agentic-DART coverage |
 |---|---|
 | TA0001 Initial Access | parse_browser_history, analyze_downloads, analyze_web_access_log, detect_webshell, detect_brute_force_rdp, analyze_unix_auth, analyze_usb_history |
 | TA0002 Execution | get_process_tree (LOTL flags), get_amcache, parse_prefetch, analyze_event_logs |

@@ -11,7 +11,7 @@
 
 ## Secondary datasets (publicly redistributable)
 
-To validate breadth against a range of case classes beyond the starter data, we exercise YuShin against the following:
+To validate breadth against a range of case classes beyond the starter data, we exercise Agentic-DART against the following:
 
 ### 1. NIST CFReDS — Hacking Case
 
@@ -22,7 +22,7 @@ To validate breadth against a range of case classes beyond the starter data, we 
 ### 2. Digital Corpora — M57-Patents
 
 - **Source:** https://digitalcorpora.org/corpora/scenarios/m57-patents-scenario/
-- **Why:** Multi-host, multi-day scenario with insider-threat elements; matches YuShin's target case class
+- **Why:** Multi-host, multi-day scenario with insider-threat elements; matches Agentic-DART's target case class
 - **Ground truth:** published scenario narrative and artifact list
 
 ### 3. Ali Hadi — DFIR Challenges

@@ -1,5 +1,5 @@
 """
-yushin-mcp — Custom MCP server exposing typed, read-only forensic functions.
+agentic-dart-mcp — Custom MCP server exposing typed, read-only forensic functions.
 
 Design rule: the set of functions registered on this server IS the agent's
 attack surface. There is no execute_shell, no write_file, no mount.
@@ -41,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-EVIDENCE_ROOT = Path(os.environ.get("YUSHIN_EVIDENCE_ROOT", "/mnt/evidence"))
+EVIDENCE_ROOT = Path(os.environ.get("AGENTIC_DART_EVIDENCE_ROOT", "/mnt/evidence"))
 
 
 # --- Guardrails --------------------------------------------------------------
@@ -100,7 +100,7 @@ def list_tools():
 
 def call_tool(name, arguments):
     if name not in _REGISTRY:
-        raise KeyError(f"ToolNotFound: '{name}' is not exposed by yushin-mcp")
+        raise KeyError(f"ToolNotFound: '{name}' is not exposed by agentic-dart-mcp")
     return _REGISTRY[name].handler(**arguments)
 
 
@@ -778,7 +778,7 @@ def correlate_timeline(events, rules=None, window_seconds=300):
 #   3. FSEvents      — filesystem change journal (/.fseventsd/, binary)
 #
 # Like the Windows Eric Zimmerman toolchain, the canonical parsers are
-# native (`log show`, `fsevents-parser`, sqlite3). YuShin consumes their
+# native (`log show`, `fsevents-parser`, sqlite3). Agentic-DART consumes their
 # exported output via sidecar files — the same sidecar-first design used
 # for MFT/ShimCache/ShellBags on the Windows side.
 #
@@ -1070,7 +1070,7 @@ def parse_fsevents(fsevents_csv, path_contains=None, flag_filter=None, limit=500
 #       → C2 / exfiltration (4)
 #
 # The functions above cover (3) in depth. This section covers (1), (2)'s
-# link back to (1), and (4). Without these, an analyst using YuShin
+# link back to (1), and (4). Without these, an analyst using Agentic-DART
 # would see the malware running but not know how it got there, and
 # would miss the data that left.
 
@@ -2218,7 +2218,7 @@ def detect_privilege_escalation(logons=None, privilege_events=None,
 #              → successful logon
 #              → immediate interactive session
 #
-# YuShin previously covered post-auth behavior (analyze_windows_logons,
+# Agentic-DART previously covered post-auth behavior (analyze_windows_logons,
 # analyze_unix_auth) but did not specifically handle web-app attacks,
 # webshell detection, or RDP-specific brute-force detection.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# YuShin — One-command deploy on a clean SANS SIFT Workstation OVA
+# Agentic-DART — One-command deploy on a clean SANS SIFT Workstation OVA
 # Usage (from a SIFT Workstation terminal):
-#   curl -fsSL https://raw.githubusercontent.com/Juwon1405/yushin-dfir/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Juwon1405/agentic-dart/main/scripts/install.sh | bash
 #
 # Status: SCAFFOLDING — full implementation in progress through June 15, 2026.
 # This script currently verifies prerequisites and clones the repo. Module
@@ -9,16 +9,16 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/Juwon1405/yushin-dfir.git"
-INSTALL_DIR="${HOME}/yushin-dfir"
+REPO_URL="https://github.com/Juwon1405/agentic-dart.git"
+INSTALL_DIR="${HOME}/agentic-dart"
 MIN_RAM_GB=16
 MIN_DISK_GB=100
 
-log()  { printf '\033[1;34m[yushin]\033[0m %s\n' "$*"; }
+log()  { printf '\033[1;34m[agentic-dart]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fatal]\033[0m %s\n' "$*" >&2; exit 1; }
 
-log "Bootstrapping YuShin on $(uname -srm)"
+log "Bootstrapping Agentic-DART on $(uname -srm)"
 
 # --- Prerequisite checks ---
 command -v git >/dev/null    || die "git is required (apt install git)"
@@ -39,7 +39,7 @@ log "Available disk at \$HOME: ${DISK_GB} GB"
 
 # --- Anthropic API key ---
 if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  warn "ANTHROPIC_API_KEY is not set. Export it before running yushin-agent."
+  warn "ANTHROPIC_API_KEY is not set. Export it before running agentic-dart-agent."
 fi
 
 # --- Clone repo ---
@@ -63,15 +63,15 @@ source .venv/bin/activate
 pip install --upgrade pip wheel >/dev/null
 
 # --- Module installs (populated as modules land) ---
-# pip install -e ./yushin-mcp
-# pip install -e ./yushin-agent
-# pip install -e ./yushin-corr
-# pip install -e ./yushin-audit
-log "Module install step reserved — populated as yushin-mcp / yushin-agent reach alpha"
+# pip install -e ./agentic-dart-mcp
+# pip install -e ./agentic-dart-agent
+# pip install -e ./agentic-dart-corr
+# pip install -e ./agentic-dart-audit
+log "Module install step reserved — populated as agentic-dart-mcp / agentic-dart-agent reach alpha"
 
 # --- Claude Code MCP registration (placeholder) ---
-# claude mcp add yushin-mcp --transport stdio --command yushin-mcp-server
-log "Claude Code MCP registration reserved — runs after yushin-mcp alpha"
+# claude mcp add agentic-dart-mcp --transport stdio --command agentic-dart-mcp-server
+log "Claude Code MCP registration reserved — runs after agentic-dart-mcp alpha"
 
 log "Bootstrap complete. See docs/troubleshooting.md if anything looks off."
-log "Next: export ANTHROPIC_API_KEY and run yushin-agent --help"
+log "Next: export ANTHROPIC_API_KEY and run agentic-dart-agent --help"

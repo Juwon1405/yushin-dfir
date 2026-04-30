@@ -20,7 +20,7 @@ tool. The macOS-specific signals:
 The staged exfiltration leaves telltale FSEvents: create + delete of
 archive files in `/var/folders/.../TemporaryItems/`.
 
-## YuShin walkthrough
+## Agentic-DART walkthrough
 
 ### Iteration 1 — UnifiedLog ingestion
 
@@ -89,7 +89,7 @@ bash examples/demo-run.sh
 
 # Exercise each macOS function
 python3 -c "
-from yushin_mcp import call_tool
+from agentic_dart_mcp import call_tool
 import json
 
 for name, args in [

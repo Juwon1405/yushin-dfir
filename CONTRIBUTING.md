@@ -1,6 +1,6 @@
-# Contributing to YuShin
+# Contributing to Agentic-DART
 
-YuShin's architecture — especially the MCP surface — is deliberately
+Agentic-DART's architecture — especially the MCP surface — is deliberately
 minimal. Contributions that expand what the agent can CALL require
 extra scrutiny; contributions that expand what the agent can SEE are
 welcomed.
@@ -8,13 +8,13 @@ welcomed.
 ## Ways to contribute
 
 - **New playbook YAML** — add a sequencing profile for a case class
-  (LOTL, ransomware staging, etc.) under `yushin_playbook/`. No Python
+  (LOTL, ransomware staging, etc.) under `agentic_dart_playbook/`. No Python
   change required.
-- **New typed MCP function** — add a parser under `yushin_mcp/`. Must
+- **New typed MCP function** — add a parser under `agentic_dart_mcp/`. Must
   be read-only, must use `_safe_resolve`, must have a Pydantic/JSON
   schema, must include a bypass test.
 - **New IP-KVM / remote-hands signature** — extend `IP_KVM_VID_PID` in
-  `yushin_mcp/src/yushin_mcp/__init__.py`. Include a CVE, advisory, or
+  `agentic_dart_mcp/src/agentic_dart_mcp/__init__.py`. Include a CVE, advisory, or
   observed-in-wild reference in the PR description.
 - **Documentation and cases** — case studies under
   `examples/case-studies/` following the pattern of

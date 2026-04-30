@@ -16,7 +16,7 @@ one of three outcomes:
 2. **Ransomware** (T1486, T1489, T1490) — encrypt for extortion
 3. **Covering tracks** (T1070) — clear logs, timestomp
 
-YuShin now detects all three across ~30 MITRE sub-techniques.
+Agentic-DART now detects all three across ~30 MITRE sub-techniques.
 
 ## Attack reconstruction (bundled evidence)
 
@@ -153,7 +153,7 @@ stats:
 
 ```bash
 python3 << 'PY'
-from yushin_mcp import call_tool
+from agentic_dart_mcp import call_tool
 import csv
 
 def load(path):

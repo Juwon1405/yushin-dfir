@@ -12,7 +12,7 @@ adds the **two most common initial-access paths in enterprise**:
 1. **Web application attack** → webshell → RCE
 2. **RDP exposed to the internet** → brute force / credential stuffing
 
-Without these, YuShin would ask "how did they get in?" and receive
+Without these, Agentic-DART would ask "how did they get in?" and receive
 silence when the answer is SQLi or RDP spray.
 
 ## Scenario A: Web app compromise
@@ -127,11 +127,11 @@ smoking-gun attribution.
 ## What the judges should run
 
 ```bash
-export YUSHIN_EVIDENCE_ROOT="$PWD/examples/sample-evidence"
-export PYTHONPATH="$PWD/yushin_audit/src:$PWD/yushin_mcp/src:$PWD/yushin_agent/src"
+export AGENTIC_DART_EVIDENCE_ROOT="$PWD/examples/sample-evidence"
+export PYTHONPATH="$PWD/agentic_dart_audit/src:$PWD/agentic_dart_mcp/src:$PWD/agentic_dart_agent/src"
 
 python3 << 'PY'
-from yushin_mcp import call_tool
+from agentic_dart_mcp import call_tool
 import json
 
 # A. Web log analysis
@@ -151,14 +151,14 @@ print(f"RDP: {len(r['credential_stuffing_ips'])} cred-stuffing IPs, "
 PY
 ```
 
-## Why YuShin's approach is meaningfully better here
+## Why Agentic-DART's approach is meaningfully better here
 
 Traditional DFIR tools for this case:
 - Web log analysis: grep `sqlmap|union|../..` — misses obfuscated payloads, no correlation
 - Webshell hunt: ClamAV signatures — high false positives, misses custom shells
 - RDP brute force: Security onion / SIEM — requires SIEM infrastructure
 
-YuShin provides:
+Agentic-DART provides:
 - **Pattern-based attack detection** with severity tuning (13 hits on real payloads, 0 on benign)
 - **Webshell detection** that combines filename + content + age anomaly for precision+recall
 - **RDP brute force classification** distinguishing credential stuffing vs password spray vs single-account brute force
