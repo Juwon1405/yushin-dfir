@@ -152,13 +152,13 @@ Verified MITRE ATT&amp;CK chain:
 [audit]  Verifying chain integrity ...
          ✓ 47 entries  ·  SHA-256 chain unbroken
          ✓ tail hash: 4f7a9c1b3e8d2046...8a13c5
-         ✓ replayability check: 47/47 deterministic
+         ✓ chain integrity check: 47/47 entries verified
 ```
 
 A human reviewer can replay the entire reasoning trace from the audit
 log alone — every input, every output, every MCP call, every
 hypothesis revision. The same inputs always produce the same
-outputs; that's what `replayability check: 47/47 deterministic` is
+outputs; that's what `chain integrity check: 47/47 entries verified` is
 asserting.
 
 ---

@@ -41,13 +41,20 @@ All notable changes to Agentic-DART are recorded here.
 
 ## [0.2.0] — 2026-04-20 (Breadth Expansion)
 
-### Added — 6 new MCP functions, all end-to-end
-- `parse_evtx`: Windows EVTX event log reader with event_id + time window filters
-- `volatility_summary`: memory dump analysis via Volatility 3 sidecar — surfaces injected processes and candidate C2 IPs
+### Added — new MCP functions in the 0.2 expansion
+
+Live on the 31-tool surface as of v0.3 (post-rebrand):
+
+- `analyze_event_logs`: Windows event log analysis with event_id + time window filters (successor to the original `parse_evtx` scaffolding)
 - `parse_knowledgec`: macOS KnowledgeC.db SQLite reader with Cocoa-epoch → ISO 8601 decoding (real SQLite connection, not a stub)
 - `parse_fsevents`: macOS FSEvents CSV reader with flag substring filter
 - `parse_unified_log`: macOS UnifiedLog (`log show --style csv`) reader with subsystem + process filters
-- `duckdb_timeline_correlate`: **real DuckDB cross-source timeline join at scale** — accepts N named sources, joins on time proximity
+- `correlate_timeline`: cross-source timeline join with time-proximity windowing
+
+Scaffolded but not on the live surface (Phase 2):
+- `volatility_summary`, `duckdb_timeline_correlate`, `match_sigma_rules`, `parse_evtx` (raw EVTX) —
+  tests under `tests/_pending/`, will land when the corresponding
+  parsers ship in Phase 2
 
 ### Added — Live mode infrastructure
 - `dart_mcp.server`: **JSON-RPC 2.0 MCP stdio server** — launchable from Claude Code via `claude mcp add agentic-dart python3 -m dart_mcp.server`. The server exposes exactly the 13 registered tools and refuses anything else (verified by two adversarial tests in `test_extended_mcp.py`).

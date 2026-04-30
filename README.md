@@ -166,12 +166,20 @@ This is the architecture-first claim made concrete: when artifacts disagree, `da
 
 ```bash
 export PYTHONPATH="$PWD/dart_audit/src:$PWD/dart_mcp/src:$PWD/dart_agent/src"
-python3 tests/test_audit_chain.py            # chain integrity + tamper detection
-python3 tests/test_mcp_surface.py            # surface is a hard-coded set
-python3 tests/test_agent_self_correction.py  # end-to-end self-correction
+export DART_EVIDENCE_ROOT="$PWD/examples/sample-evidence"
+
+python3 tests/test_audit_chain.py            #  3 — chain integrity + tamper detection
+python3 tests/test_mcp_surface.py            #  3 — surface is the exact positive set
+python3 tests/test_mcp_bypass.py             #  6 — destructive ops are blocked
+python3 tests/test_agent_self_correction.py  #  1 — end-to-end self-correction
+python3 tests/test_live_mcp.py               #  4 — JSON-RPC stdio wire tests
+                                             # ──
+                                             # 17 tests
 ```
 
-All three pass on a clean checkout. See `tests/` for exactly what is asserted.
+All 17 pass on a clean checkout. The repo also contains
+`tests/_pending/` — tests for Phase 2 functions not yet on the
+MCP surface. Those are intentionally not part of the 17/17 count.
 
 ## Target case class
 
