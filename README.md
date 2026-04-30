@@ -39,7 +39,7 @@
 - [Measured accuracy (reproducible)](#measured-accuracy-reproducible)
 - [Status — what is implemented vs. what is roadmap](#status--what-is-implemented-vs-what-is-roadmap)
 - [License](#license)
-- [Team](#team)
+- [Author](#author)
 
 ---
 
